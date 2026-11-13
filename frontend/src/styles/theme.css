@@ -1,0 +1,47 @@
+:root {
+  /* Approved SkillSphere design palette */
+  --color-midnight: #08090B;
+  --color-ivory: #FAF8F3;
+  --color-neon: #CDF22B;
+
+  /* Legacy aliases retained so existing screens inherit the approved palette */
+  --primary-powder-blue: #CDF22B;
+  --primary-powder-blue-light: #EAF7B7;
+  --primary-powder-blue-dark: #7E9D12;
+  --background-lavender: #FAF8F3;
+  --background-lavender-light: #F5F3EC;
+  --accent-peach: #E7E5DD;
+  --accent-peach-light: #F2F0E9;
+  --accent-peach-dark: #B6B3A8;
+
+  --surface-white: #FFFFFF;
+  --surface-card: #FFFFFF;
+  --surface-subtle: #FAF9F5;
+  --border-soft: #E8E6DE;
+  --border-light: rgba(8, 9, 11, 0.08);
+
+  --text-primary: #171914;
+  --text-secondary: #55584E;
+  --text-muted: #77796F;
+  --text-light: #999B91;
+
+  --success: #4C7C16;
+  --success-bg: #F0F6E4;
+  --warning: #A66B0C;
+  --warning-bg: #FFF7E4;
+  --danger: #B43A2C;
+  --danger-bg: #FBEDEA;
+  --info: #52624A;
+  --info-bg: #F1F3EA;
+
+  --shadow-sm: 0 2px 7px rgba(8, 9, 11, 0.045);
+  --shadow-md: 0 7px 20px rgba(8, 9, 11, 0.07);
+  --shadow-lg: 0 14px 32px rgba(8, 9, 11, 0.1);
+  --glass-bg: rgba(255, 255, 255, 0.92);
+  --glass-border: 1px solid rgba(8, 9, 11, 0.07);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
