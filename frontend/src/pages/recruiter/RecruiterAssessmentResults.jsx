@@ -1,284 +1,814 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from "react";
 import {
-  CheckCircle2,
-  XCircle,
-  Search,
-  Filter,
-  Eye,
+  Activity,
+  AlertTriangle,
   Award,
-  Clock,
-  Briefcase,
-  User,
-} from 'lucide-react';
-import api from '../../services/api';
+  CheckCircle2,
+  Clock3,
+  FileSearch,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  UserRound,
+  X,
+  XCircle,
+} from "lucide-react";
+import api from "../../services/api";
+import "./RecruiterAssessmentResults.css";
+
+const REVIEW_API = "/recruiter/assessments/reviews";
 
 export default function RecruiterAssessmentResults() {
   const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState(''); // 'qualified', 'not_qualified'
-  const [jobs, setJobs] = useState([]);
-  const [selectedJobId, setSelectedJobId] = useState('');
+  const [selectedResult, setSelectedResult] = useState(null);
 
-  // Selected Result for Detail Modal
-  const [activeResult, setActiveResult] = useState(null);
+  const [violations, setViolations] = useState([]);
+  const [violationSummary, setViolationSummary] = useState(null);
+
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [violationLoading, setViolationLoading] = useState(false);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [reviewNotes, setReviewNotes] = useState("");
+
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   useEffect(() => {
-    fetchJobs();
     fetchResults();
-  }, [selectedJobId, statusFilter]);
-
-  const fetchJobs = async () => {
-    try {
-      const res = await api.get('/recruiter/jobs');
-      setJobs(res.data);
-    } catch (e) {}
-  };
+  }, []);
 
   const fetchResults = async () => {
-    setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (selectedJobId) params.append('job_id', selectedJobId);
-      if (statusFilter) params.append('status_filter', statusFilter);
-      if (search) params.append('search', search);
+      setLoading(true);
+      setError("");
+      setSuccess("");
 
-      const res = await api.get(`/recruiter/assessments/results?${params.toString()}`);
-      setResults(res.data);
-    } catch (e) {
-      console.error(e);
+      const response = await api.get(REVIEW_API, {
+        params: {
+          review_status: statusFilter,
+        },
+      });
+
+      setResults(Array.isArray(response.data) ? response.data : []);
+    } catch (err) {
+      setError(
+        err.response?.data?.detail ||
+          "Unable to load assessment review results."
+      );
     } finally {
       setLoading(false);
     }
   };
 
+  const fetchViolations = async (assignmentId) => {
+    if (!assignmentId) {
+      setViolations([]);
+      setViolationSummary(null);
+      return;
+    }
+
+    try {
+      setViolationLoading(true);
+
+      const response = await api.get(
+        `/recruiter/proctoring/assignments/${assignmentId}/violations`
+      );
+
+      setViolations(response.data.violations || []);
+      setViolationSummary(response.data);
+    } catch (err) {
+      setViolations([]);
+      setViolationSummary(null);
+
+      console.error(
+        "Unable to load proctoring history:",
+        err.response?.data || err.message
+      );
+    } finally {
+      setViolationLoading(false);
+    }
+  };
+
+  const openResult = async (result) => {
+    try {
+      setDetailLoading(true);
+      setSelectedResult(null);
+      setViolations([]);
+      setViolationSummary(null);
+      setReviewNotes(result.review_notes || "");
+      setError("");
+      setSuccess("");
+
+      const response = await api.get(
+        `/recruiter/assessments/results/${result.id}`
+      );
+
+      const detail = {
+        ...result,
+        ...response.data,
+        review_status: result.review_status,
+        review_notes: result.review_notes,
+        reviewed_at: result.reviewed_at,
+        automatic_score_qualified: result.automatic_score_qualified,
+      };
+
+      setSelectedResult(detail);
+
+      await fetchViolations(
+        detail.assignment_id || result.assignment_id
+      );
+    } catch (err) {
+      setError(
+        err.response?.data?.detail ||
+          "Unable to load candidate details."
+      );
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeDetail = () => {
+    setSelectedResult(null);
+    setViolations([]);
+    setViolationSummary(null);
+    setReviewNotes("");
+  };
+
+  const submitReview = async (decision) => {
+    if (!selectedResult) return;
+
+    const decisionLabel =
+      decision === "QUALIFIED" ? "Qualified" : "Not Qualified";
+
+    const confirmed = window.confirm(
+      `Confirm final decision: ${decisionLabel}? This decision cannot be changed.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setReviewSubmitting(true);
+      setError("");
+      setSuccess("");
+
+      await api.post(
+        `${REVIEW_API}/${selectedResult.id}/review`,
+        {
+          decision,
+          review_notes: reviewNotes.trim() || null,
+        }
+      );
+
+      setSuccess(
+        `Final decision saved: ${decisionLabel}. Candidate has been notified.`
+      );
+
+      closeDetail();
+      await fetchResults();
+    } catch (err) {
+      setError(
+        err.response?.data?.detail ||
+          "Unable to submit recruiter review."
+      );
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const filteredResults = results.filter((item) => {
+    const term = search.trim().toLowerCase();
+
+    if (!term) return true;
+
+    return (
+      (item.candidate_name || "").toLowerCase().includes(term) ||
+      (item.candidate_email || "").toLowerCase().includes(term) ||
+      (item.job_title || "").toLowerCase().includes(term)
+    );
+  });
+
+  const pendingCount = results.filter(
+    (item) => item.review_status === "PENDING_REVIEW"
+  ).length;
+
+  const qualifiedCount = results.filter(
+    (item) => item.review_status === "QUALIFIED"
+  ).length;
+
+  const notQualifiedCount = results.filter(
+    (item) => item.review_status === "NOT_QUALIFIED"
+  ).length;
+
+  const flaggedCount = results.filter(
+    (item) => item.is_flagged_for_review
+  ).length;
+
+  const formatDate = (value) =>
+    value ? new Date(value).toLocaleString() : "Not available";
+
+  const formatTime = (seconds) => {
+    if (!seconds) return "0 min";
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  };
+
+  const getViolationLabel = (type) => {
+    const labels = {
+      AI_PHONE_DETECTED: "Mobile phone detected",
+      AI_MULTIPLE_PEOPLE_DETECTED: "Multiple people detected",
+      TAB_SWITCH: "Tab switched",
+      WINDOW_BLUR: "Window lost focus",
+      FULLSCREEN_EXIT: "Fullscreen exited",
+      CAMERA_DISCONNECTED: "Camera disconnected",
+      RECORDING_STOPPED: "Recording stopped",
+    };
+
+    return labels[type] || type?.replaceAll("_", " ");
+  };
+
+  const isDangerViolation = (type) =>
+    type?.includes("PHONE") || type?.includes("MULTIPLE");
+
+  const getReviewStatusLabel = (status) => {
+    if (status === "QUALIFIED") return "Qualified";
+    if (status === "NOT_QUALIFIED") return "Not Qualified";
+    return "Pending Review";
+  };
+
+  const getReviewStatusClass = (status) => {
+    if (status === "QUALIFIED") return "qualified";
+    if (status === "NOT_QUALIFIED") return "not-qualified";
+    return "pending";
+  };
+
   return (
-    <div>
-      <div className="page-header">
-        <div>
-          <h2 className="page-title">Candidate Assessment Results</h2>
-          <p className="page-subtitle">
-            Review live scorecards and question breakdowns for first-round candidate MCQ screenings.
-          </p>
-        </div>
-      </div>
+    <main className="assessment-page">
+      <div className="assessment-container">
+        <header className="assessment-heading">
+          <div>
+            <div className="assessment-eyebrow">
+              RECRUITMENT WORKSPACE
+            </div>
+            <h1>Assessment Results</h1>
+            <p>
+              Review candidate scorecards and make final assessment
+              decisions.
+            </p>
+          </div>
 
-      {/* Filter Bar */}
-      <div className="card" style={{ marginBottom: '24px', padding: '18px 24px' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' }}>
-          <div style={{ flex: 1, minWidth: '240px', position: 'relative' }}>
-            <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '12px' }} />
-            <input
-              type="text"
-              placeholder="Search candidate name or email..."
-              className="form-input"
-              style={{ paddingLeft: '38px' }}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && fetchResults()}
+          <button
+            className="ar-button ar-button-primary"
+            onClick={fetchResults}
+            disabled={loading}
+          >
+            <RefreshCw
+              size={17}
+              className={loading ? "ar-spin" : ""}
             />
-          </div>
-
-          <div style={{ width: '220px' }}>
-            <select
-              className="form-select"
-              value={selectedJobId}
-              onChange={(e) => setSelectedJobId(e.target.value)}
-            >
-              <option value="">All Job Postings</option>
-              {jobs.map((j) => (
-                <option key={j.id} value={j.id}>{j.title}</option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ width: '180px' }}>
-            <select
-              className="form-select"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              <option value="">All Results</option>
-              <option value="qualified">Qualified Only</option>
-              <option value="not_qualified">Not Qualified</option>
-            </select>
-          </div>
-
-          <button onClick={fetchResults} className="btn btn-outline">
-            Apply Filters
+            Refresh Results
           </button>
-        </div>
-      </div>
+        </header>
 
-      {/* Results Table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-            Loading candidate scorecards...
+        {error && (
+          <div className="ar-error">
+            <AlertTriangle size={19} />
+            <span>{error}</span>
+            <button
+              onClick={() => setError("")}
+              aria-label="Dismiss error"
+            >
+              <X size={17} />
+            </button>
           </div>
-        ) : results.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '50px 20px' }}>
-            <Award size={48} color="var(--primary-powder-blue)" style={{ margin: '0 auto 12px' }} />
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>No Assessment Results Found</h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Results will populate here automatically once shortlisted candidates complete their assessments.
-            </p>
-          </div>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Candidate</th>
-                <th>Job & Assessment</th>
-                <th>Score</th>
-                <th>Percentage</th>
-                <th>Correct / Wrong</th>
-                <th>Status</th>
-                <th>Submitted</th>
-                <th style={{ textAlign: 'right' }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <p style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{r.candidate_name}</p>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{r.candidate_email}</p>
-                  </td>
-                  <td>
-                    <p style={{ fontWeight: 600 }}>{r.job_title}</p>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{r.assessment_title}</p>
-                  </td>
-                  <td>
-                    <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>
-                      {r.obtained_marks} / {r.total_marks}
-                    </span>
-                    <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      Pass: {r.qualification_rule} {r.passing_marks}
-                    </span>
-                  </td>
-                  <td>
-                    <span style={{ fontWeight: 700 }}>{r.percentage}%</span>
-                  </td>
-                  <td>
-                    <span style={{ color: 'var(--success)', fontWeight: 700 }}>{r.correct_count}</span>
-                    {' / '}
-                    <span style={{ color: 'var(--danger)', fontWeight: 700 }}>{r.incorrect_count}</span>
-                    {r.unanswered_count > 0 && (
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}> ({r.unanswered_count} skipped)</span>
-                    )}
-                  </td>
-                  <td>
-                    {r.is_qualified ? (
-                      <span className="badge badge-success" style={{ gap: '4px' }}>
-                        <CheckCircle2 size={12} /> Qualified
-                      </span>
-                    ) : (
-                      <span className="badge badge-danger" style={{ gap: '4px' }}>
-                        <XCircle size={12} /> Not Qualified
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    {new Date(r.evaluated_at).toLocaleDateString()}
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      onClick={() => setActiveResult(r)}
-                      className="btn btn-outline"
-                      style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-                    >
-                      <Eye size={14} /> Breakdown
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         )}
-      </div>
 
-      {/* Detailed Breakdown Modal */}
-      {activeResult && (
-        <div className="modal-overlay">
-          <div className="modal-content" style={{ maxWidth: '750px' }}>
-            <h3 style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '4px' }}>
-              Candidate Assessment Breakdown
-            </h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '18px' }}>
-              {activeResult.candidate_name} ({activeResult.candidate_email}) — {activeResult.job_title}
-            </p>
+        {success && (
+          <div className="ar-notice ar-notice-success">
+            <CheckCircle2 size={19} />
+            <span>{success}</span>
+          </div>
+        )}
 
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
-              gap: '12px',
-              padding: '14px',
-              background: 'var(--surface-subtle)',
-              borderRadius: 'var(--radius-md)',
-              marginBottom: '20px'
-            }}>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Score</span>
-                <p style={{ fontWeight: 800, fontSize: '1.1rem' }}>{activeResult.obtained_marks} / {activeResult.total_marks}</p>
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Percentage</span>
-                <p style={{ fontWeight: 800, fontSize: '1.1rem' }}>{activeResult.percentage}%</p>
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Qualification Rule</span>
-                <p style={{ fontWeight: 700, fontSize: '0.95rem' }}>{activeResult.qualification_rule} {activeResult.passing_marks} pts</p>
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Status</span>
-                <p style={{ fontWeight: 800, fontSize: '0.95rem', color: activeResult.is_qualified ? 'var(--success)' : 'var(--danger)' }}>
-                  {activeResult.is_qualified ? 'QUALIFIED' : 'NOT QUALIFIED'}
-                </p>
-              </div>
+        <section className="ar-stats">
+          <SummaryCard
+            icon={<Activity />}
+            title="Total Assessments"
+            value={results.length}
+            tone="dark"
+          />
+
+          <SummaryCard
+            icon={<Clock3 />}
+            title="Pending Review"
+            value={pendingCount}
+            tone="orange"
+          />
+
+          <SummaryCard
+            icon={<CheckCircle2 />}
+            title="Qualified"
+            value={qualifiedCount}
+            tone="green"
+          />
+
+          <SummaryCard
+            icon={<XCircle />}
+            title="Not Qualified"
+            value={notQualifiedCount}
+            tone="red"
+          />
+        </section>
+
+        <section className="ar-filter-panel">
+          <div className="ar-section-title">
+            <div>
+              <h2>Candidate Scorecards</h2>
+              <p>
+                Review performance and submit your final decision.
+              </p>
             </div>
 
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '12px' }}>Question-by-Question Review</h4>
-            <div style={{ maxHeight: '360px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {activeResult.question_breakdown?.map((q, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    padding: '12px',
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-soft)',
-                    background: q.is_correct ? 'rgba(16, 185, 129, 0.04)' : 'rgba(239, 68, 68, 0.04)'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <p style={{ fontWeight: 600, fontSize: '0.88rem', flex: 1 }}>
-                      {idx + 1}. {q.question_text}
-                    </p>
-                    <span style={{
-                      fontWeight: 700,
-                      fontSize: '0.8rem',
-                      color: q.is_correct ? 'var(--success)' : 'var(--danger)',
-                      marginLeft: '12px'
-                    }}>
-                      {q.marks_awarded > 0 ? `+${q.marks_awarded}` : q.marks_awarded} pts
-                    </span>
-                  </div>
+            <span className="ar-count">
+              {filteredResults.length} results
+            </span>
+          </div>
 
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
-                    Candidate Selected: <strong>Option {q.selected_option || 'None (Skipped)'}</strong>
-                  </p>
-                </div>
-              ))}
+          <div className="ar-filters">
+            <div className="ar-search">
+              <Search size={18} />
+
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search candidate, email or job..."
+              />
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
-              <button onClick={() => setActiveResult(null)} className="btn btn-primary">
-                Close Breakdown
+            <select
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setSelectedResult(null);
+              }}
+              aria-label="Filter by review status"
+            >
+              <option value="ALL">All Reviews</option>
+              <option value="PENDING_REVIEW">Pending Review</option>
+              <option value="QUALIFIED">Qualified</option>
+              <option value="NOT_QUALIFIED">Not Qualified</option>
+            </select>
+          </div>
+        </section>
+
+        <section className="ar-table-card">
+          {loading ? (
+            <div className="ar-empty">
+              <RefreshCw className="ar-spin" size={25} />
+              <h3>Loading assessment results</h3>
+              <p>Please wait while we fetch the latest results.</p>
+            </div>
+          ) : filteredResults.length === 0 ? (
+            <div className="ar-empty">
+              <FileSearch size={38} />
+              <h3>No assessment results found</h3>
+              <p>
+                Completed assessments will appear here for recruiter
+                review.
+              </p>
+            </div>
+          ) : (
+            <div className="ar-table-scroll">
+              <table className="ar-table">
+                <thead>
+                  <tr>
+                    <th>Candidate</th>
+                    <th>Job</th>
+                    <th>Score</th>
+                    <th>Percentage</th>
+                    <th>Review Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredResults.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <div className="ar-candidate">
+                          <div className="ar-avatar">
+                            {(item.candidate_name || "C")
+                              .charAt(0)
+                              .toUpperCase()}
+                          </div>
+
+                          <div>
+                            <strong>
+                              {item.candidate_name || "Candidate"}
+                            </strong>
+                            <small>{item.candidate_email}</small>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td>{item.job_title || "—"}</td>
+
+                      <td>
+                        <strong>
+                          {item.obtained_marks} / {item.total_marks}
+                        </strong>
+                      </td>
+
+                      <td>
+                        <strong>
+                          {Number(item.percentage || 0).toFixed(1)}%
+                        </strong>
+                      </td>
+
+                      <td>
+                        <span
+                          className={`ar-status ${getReviewStatusClass(
+                            item.review_status
+                          )}`}
+                        >
+                          {getReviewStatusLabel(item.review_status)}
+                        </span>
+                      </td>
+
+                      <td>
+                        <button
+                          className="ar-link-button"
+                          onClick={() => openResult(item)}
+                        >
+                          Review Scorecard <span>→</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {(selectedResult || detailLoading) && (
+          <section className="ar-detail-panel">
+            <div className="ar-detail-heading">
+              <div>
+                <span className="assessment-eyebrow">
+                  CANDIDATE REVIEW
+                </span>
+                <h2>Assessment Details</h2>
+              </div>
+
+              <button
+                className="ar-close-button"
+                onClick={closeDetail}
+                aria-label="Close details"
+              >
+                <X size={20} />
               </button>
             </div>
-          </div>
-        </div>
-      )}
-    </div>
+
+            {detailLoading ? (
+              <div className="ar-empty">
+                <RefreshCw className="ar-spin" size={24} />
+                <p>Loading candidate details...</p>
+              </div>
+            ) : (
+              <>
+                <div className="ar-detail-grid">
+                  <DetailCard
+                    icon={<UserRound />}
+                    title="Candidate"
+                    value={selectedResult.candidate_name}
+                  />
+
+                  <DetailCard
+                    icon={<Award />}
+                    title="Assessment Score"
+                    value={`${selectedResult.obtained_marks ?? 0} / ${
+                      selectedResult.total_marks ?? 0
+                    }`}
+                  />
+
+                  <DetailCard
+                    icon={<Activity />}
+                    title="Percentage"
+                    value={`${Number(
+                      selectedResult.percentage || 0
+                    ).toFixed(1)}%`}
+                  />
+
+                  <DetailCard
+                    title="Correct Answers"
+                    value={selectedResult.correct_count}
+                  />
+
+                  <DetailCard
+                    title="Incorrect Answers"
+                    value={selectedResult.incorrect_count}
+                  />
+
+                  <DetailCard
+                    title="Unanswered"
+                    value={selectedResult.unanswered_count}
+                  />
+
+                  <DetailCard
+                    icon={<Clock3 />}
+                    title="Time Taken"
+                    value={formatTime(
+                      selectedResult.time_taken_seconds
+                    )}
+                  />
+
+                  <DetailCard
+                    title="Passing Marks"
+                    value={selectedResult.passing_marks}
+                  />
+
+                  <DetailCard
+                    title="Automatic Threshold"
+                    value={
+                      selectedResult.automatic_score_qualified
+                        ? "Threshold Met"
+                        : "Threshold Not Met"
+                    }
+                  />
+                </div>
+
+                <div className="ar-notice">
+                  <strong>Recruiter decision:</strong>{" "}
+                  {getReviewStatusLabel(
+                    selectedResult.review_status
+                  )}
+                </div>
+
+                {selectedResult.review_status === "PENDING_REVIEW" && (
+                  <div className="ar-review-action-panel">
+                    <h3>Submit Final Decision</h3>
+
+                    <p>
+                      Review the scorecard and proctoring history before
+                      making your final decision. This decision cannot be
+                      changed after submission.
+                    </p>
+
+                    <label
+                      htmlFor="assessment-review-notes"
+                      style={{
+                        display: "block",
+                        marginBottom: "8px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Review Notes (Optional)
+                    </label>
+
+                    <textarea
+                      id="assessment-review-notes"
+                      value={reviewNotes}
+                      onChange={(e) => setReviewNotes(e.target.value)}
+                      placeholder="Add your review notes..."
+                      rows={4}
+                      maxLength={2000}
+                      style={{
+                        width: "100%",
+                        resize: "vertical",
+                        padding: "12px",
+                        borderRadius: "10px",
+                        border: "1px solid #d5d9e2",
+                        fontFamily: "inherit",
+                        marginBottom: "16px",
+                      }}
+                    />
+
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "12px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <button
+                        className="ar-button ar-button-primary"
+                        disabled={reviewSubmitting}
+                        onClick={() => submitReview("QUALIFIED")}
+                      >
+                        <CheckCircle2 size={17} />
+                        Mark Qualified
+                      </button>
+
+                      <button
+                        className="ar-button"
+                        disabled={reviewSubmitting}
+                        onClick={() => submitReview("NOT_QUALIFIED")}
+                        style={{
+                          background: "#fff",
+                          color: "#b42318",
+                          border: "1px solid #f0b7b7",
+                        }}
+                      >
+                        <XCircle size={17} />
+                        Mark Not Qualified
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {selectedResult.review_status !== "PENDING_REVIEW" && (
+                  <div className="ar-notice">
+                    <strong>Final Decision Submitted</strong>
+                    <p>
+                      Decision:{" "}
+                      {getReviewStatusLabel(
+                        selectedResult.review_status
+                      )}
+                    </p>
+
+                    {selectedResult.review_notes && (
+                      <p>
+                        <strong>Review Notes:</strong>{" "}
+                        {selectedResult.review_notes}
+                      </p>
+                    )}
+
+                    {selectedResult.reviewed_at && (
+                      <p>
+                        <strong>Reviewed At:</strong>{" "}
+                        {formatDate(selectedResult.reviewed_at)}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="ar-breakdown">
+                  <h3>Assessment Question Breakdown</h3>
+                  <pre>
+                    {JSON.stringify(
+                      selectedResult.question_breakdown || [],
+                      null,
+                      2
+                    )}
+                  </pre>
+                </div>
+
+                <div className="ar-proctoring">
+                  <div className="ar-proctoring-heading">
+                    <div>
+                      <span className="assessment-eyebrow">
+                        AI PROCTORING
+                      </span>
+                      <h3>Violation History</h3>
+                      <p>Review recorded assessment warnings.</p>
+                    </div>
+
+                    {violationSummary && (
+                      <span
+                        className={`ar-review-badge ${
+                          violationSummary.is_flagged_for_review
+                            ? "flagged"
+                            : "clear"
+                        }`}
+                      >
+                        {violationSummary.is_flagged_for_review
+                          ? "Flagged for Review"
+                          : "Not Flagged"}
+                      </span>
+                    )}
+                  </div>
+
+                  {violationLoading ? (
+                    <div className="ar-empty">
+                      <RefreshCw className="ar-spin" size={22} />
+                      <p>Loading proctoring history...</p>
+                    </div>
+                  ) : !violationSummary ? (
+                    <div className="ar-notice">
+                      Proctoring history is unavailable. Confirm that
+                      the assessment assignment ID is included in the
+                      results API.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="ar-detail-grid ar-violation-stats">
+                        <DetailCard
+                          title="Total Warnings"
+                          value={violationSummary.warning_count || 0}
+                        />
+
+                        <DetailCard
+                          title="Recorded Violations"
+                          value={violations.length}
+                        />
+                      </div>
+
+                      {violations.length === 0 ? (
+                        <div className="ar-notice ar-notice-success">
+                          <ShieldCheck size={20} />
+                          No violations recorded for this assessment.
+                        </div>
+                      ) : (
+                        <div className="ar-violation-list">
+                          {violations.map((item) => (
+                            <article
+                              className="ar-violation"
+                              key={item.id}
+                            >
+                              <div className="ar-violation-icon">
+                                <AlertTriangle
+                                  size={19}
+                                  className={
+                                    isDangerViolation(
+                                      item.violation_type
+                                    )
+                                      ? "danger-icon"
+                                      : ""
+                                  }
+                                />
+                              </div>
+
+                              <div className="ar-violation-content">
+                                <strong>
+                                  {getViolationLabel(
+                                    item.violation_type
+                                  )}
+                                </strong>
+                                <small>
+                                  {formatDate(item.detected_at)}
+                                </small>
+                              </div>
+
+                              <div className="ar-violation-meta">
+                                {item.confidence !== null &&
+                                  item.confidence !== undefined && (
+                                    <span>
+                                      Confidence:{" "}
+                                      {(
+                                        item.confidence * 100
+                                      ).toFixed(1)}
+                                      %
+                                    </span>
+                                  )}
+
+                                <span
+                                  className={`ar-violation-tag ${
+                                    isDangerViolation(
+                                      item.violation_type
+                                    )
+                                      ? "danger"
+                                      : "warning"
+                                  }`}
+                                >
+                                  {item.violation_type?.startsWith(
+                                    "AI_"
+                                  )
+                                    ? "AI Detection"
+                                    : "Browser Warning"}
+                                </span>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function SummaryCard({ icon, title, value, tone }) {
+  return (
+    <article className={`ar-stat-card ${tone}`}>
+      <div className="ar-stat-icon">{icon}</div>
+
+      <div>
+        <p>{title}</p>
+        <strong>{value}</strong>
+      </div>
+    </article>
+  );
+}
+
+function DetailCard({ icon, title, value }) {
+  return (
+    <article className="ar-detail-card">
+      <div className="ar-detail-label">
+        {icon}
+        <span>{title}</span>
+      </div>
+
+      <strong>{value ?? "N/A"}</strong>
+    </article>
   );
 }

@@ -1,22 +1,15 @@
-
 import React from 'react';
-import {
-  BrowserRouter,
-  Routes,
-  Route,
-  Navigate
-} from 'react-router-dom';
-
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 
-// Public Pages
+// Public Landing & Auth Pages
 import Home from './pages/Home';
 import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
-import ForgotPassword from './pages/auth/ForgotPassword';
-import ResetPassword from './pages/auth/ResetPassword';
-import VerifyEmail from './pages/auth/VerifyEmail';
+
+// Shared Support Center
+import SupportTickets from './pages/SupportTickets';
 
 // Candidate Pages
 import CandidateDashboard from './pages/candidate/CandidateDashboard';
@@ -45,21 +38,20 @@ import CompanyProfile from './pages/recruiter/CompanyProfile';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
+import PendingApprovals from './pages/admin/PendingApprovals';
+import AdminProctoringHistory from './pages/admin/AdminProctoring';
 
-// ROOT REDIRECT
+// Root Redirect
 function RootRedirect() {
   const { user, token, loading } = useAuth();
 
-  if (loading) {
-    return null;
-  }
+  if (loading) return null;
 
-  // Public homepage for logged-out users
   if (!token || !user) {
     return <Home />;
   }
 
-  const role = user.role?.toUpperCase();
+  const role = user.role ? user.role.toUpperCase() : '';
 
   if (role === 'ADMIN') {
     return <Navigate to="/admin/dashboard" replace />;
@@ -78,179 +70,162 @@ export default function App() {
       <BrowserRouter>
         <Routes>
 
-          {/* PUBLIC HOMEPAGE */}
+          {/* Public Routes */}
           <Route path="/" element={<RootRedirect />} />
           <Route path="/home" element={<Home />} />
-
-          {/* AUTHENTICATION ROUTES */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/verify-email" element={<VerifyEmail />} />
 
-          {/* CANDIDATE ROUTES */}
+          {/* Candidate Protected Routes */}
           <Route element={<ProtectedRoute allowedRoles={['CANDIDATE']} />}>
-
             <Route
               path="/candidate/dashboard"
               element={<CandidateDashboard />}
             />
-
             <Route
               path="/candidate/profile"
               element={<CandidateProfile />}
             />
-
             <Route
               path="/candidate/jobs"
               element={<ExploreJobs />}
             />
-
             <Route
               path="/candidate/saved-jobs"
               element={<SavedJobs />}
             />
-
             <Route
               path="/candidate/applications"
               element={<MyApplications />}
             />
-
             <Route
               path="/candidate/resumes"
               element={<ResumeManagement />}
             />
-
             <Route
               path="/candidate/resume-builder"
               element={<ResumeBuilder />}
             />
-
             <Route
               path="/candidate/assessments"
               element={<FirstRoundAssessments />}
             />
-
             <Route
               path="/candidate/first-round-assessments"
               element={<FirstRoundAssessments />}
             />
-
             <Route
               path="/candidate/assessments/:assignmentId/take"
               element={<TakeAssessment />}
             />
-
             <Route
               path="/candidate/assessments/:assignmentId/result"
               element={<AssessmentResultView />}
             />
-
             <Route
               path="/candidate/assessment-result/:assignmentId"
               element={<AssessmentResultView />}
             />
-
             <Route
               path="/candidate/matching"
               element={<SkillGapAnalysis />}
             />
-
             <Route
               path="/candidate/interview-practice"
               element={<MockInterviewPractice />}
             />
-
             <Route
               path="/candidate/technical-assessments"
               element={<TechnicalQuiz />}
             />
-
+            <Route
+              path="/candidate/support"
+              element={<SupportTickets />}
+            />
           </Route>
 
-          {/* RECRUITER ROUTES */}
+          {/* Recruiter Protected Routes */}
           <Route element={<ProtectedRoute allowedRoles={['RECRUITER']} />}>
-
             <Route
               path="/recruiter/dashboard"
               element={<RecruiterDashboard />}
             />
-
             <Route
               path="/recruiter/company"
               element={<CompanyProfile />}
             />
-
             <Route
               path="/recruiter/jobs"
               element={<RecruiterJobs />}
             />
-
             <Route
               path="/recruiter/question-bank"
               element={<QuestionBank />}
             />
-
             <Route
               path="/recruiter/pipeline"
               element={<ApplicantPipeline />}
             />
-
             <Route
               path="/recruiter/comparison"
               element={<CandidateComparison />}
             />
-
             <Route
               path="/recruiter/assessments/results"
               element={<RecruiterAssessmentResults />}
             />
-
             <Route
               path="/recruiter/interviews"
               element={<InterviewScheduler />}
             />
-
+            <Route
+              path="/recruiter/support"
+              element={<SupportTickets />}
+            />
           </Route>
 
-          {/* ADMIN ROUTES */}
+          {/* Admin Protected Routes */}
           <Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>
-
             <Route
               path="/admin/dashboard"
               element={<AdminDashboard />}
             />
-
             <Route
               path="/admin/users"
               element={<AdminDashboard />}
             />
-
             <Route
               path="/admin/recruiters"
               element={<AdminDashboard />}
             />
-
             <Route
               path="/admin/jobs"
               element={<AdminDashboard />}
             />
-
+            <Route
+              path="/admin/pending-approvals"
+              element={<PendingApprovals />}
+            />
+            <Route
+              path="/admin/proctoring"
+              element={<AdminProctoringHistory />}
+            />
             <Route
               path="/admin/question-bank"
               element={<QuestionBank />}
             />
-
             <Route
               path="/admin/audit-logs"
               element={<AdminDashboard />}
             />
-
+            <Route
+              path="/admin/support"
+              element={<SupportTickets />}
+            />
           </Route>
 
-          {/* FALLBACK */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Catch-all Route */}
+          <Route path="*" element={<RootRedirect />} />
 
         </Routes>
       </BrowserRouter>

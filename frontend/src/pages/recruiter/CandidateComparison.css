@@ -1,0 +1,505 @@
+
+/* ==========================================
+   SKILLSPHERE — CANDIDATE COMPARISON
+========================================== */
+
+.ss-dashboard {
+  min-height: 100vh;
+  padding: 30px;
+  background: #f8f7f2;
+  color: #171914;
+}
+
+.ss-dashboard,
+.ss-dashboard * {
+  box-sizing: border-box;
+}
+
+.ss-dashboard .ss-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 27px;
+}
+
+.ss-dashboard .ss-eyebrow {
+  display: block;
+  color: #819900;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.8px;
+  margin-bottom: 9px;
+}
+
+.ss-dashboard .ss-heading h1 {
+  margin: 0;
+  color: #171914;
+  font-size: clamp(27px, 3vw, 35px);
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.ss-dashboard .ss-heading p {
+  margin: 8px 0 0;
+  color: #85867d;
+  font-size: 14px;
+}
+
+.ss-dashboard .ss-primary-btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 11px;
+  background: #cdf22b;
+  color: #171914;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.ss-dashboard .ss-primary-btn:hover:not(:disabled) {
+  background: #bce51b;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 14px rgba(160, 195, 20, 0.2);
+}
+
+.ss-dashboard button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ss-dashboard .ss-alert {
+  padding: 13px 16px;
+  margin-bottom: 18px;
+  border: 1px solid #f1c7bf;
+  border-radius: 11px;
+  background: #fff0ed;
+  color: #aa4639;
+  font-size: 13px;
+}
+
+.ss-dashboard .ss-card {
+  padding: 23px;
+  border: 1px solid #eae8df;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(25, 25, 15, 0.035);
+}
+
+.ss-dashboard .ss-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.ss-dashboard .ss-card-head h3 {
+  margin: 0;
+  color: #20221b;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.ss-dashboard .ss-card-head p {
+  margin: 6px 0 0;
+  color: #85867d;
+  font-size: 13px;
+}
+
+.ss-dashboard .comparison-selected-count {
+  padding: 8px 13px;
+  border-radius: 30px;
+  background: #eff6d8;
+  color: #617800;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Filters */
+
+.ss-dashboard .comparison-filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 19px;
+}
+
+.ss-dashboard .ss-search {
+  width: min(100%, 360px);
+  min-height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 13px;
+  border: 1px solid #e5e4dc;
+  border-radius: 10px;
+  color: #85877d;
+  background: #fff;
+}
+
+.ss-dashboard .ss-search:focus-within {
+  border-color: #a9cc16;
+  box-shadow: 0 0 0 3px rgba(205, 242, 43, 0.15);
+}
+
+.ss-dashboard .ss-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #25271f;
+  font-size: 13px;
+}
+
+.ss-dashboard .comparison-filters select {
+  min-width: 180px;
+  padding: 0 13px;
+  border: 1px solid #e5e4dc;
+  border-radius: 10px;
+  background: #fff;
+  color: #393b32;
+  font-size: 13px;
+  outline: none;
+}
+
+/* Applicant list */
+
+.ss-dashboard .comparison-applicant-list {
+  display: grid;
+  gap: 10px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.ss-dashboard .comparison-applicant {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid #ecebe4;
+  border-radius: 13px;
+  background: #fff;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.ss-dashboard .comparison-applicant:hover {
+  border-color: #d5e58e;
+  background: #fcfdf7;
+}
+
+.ss-dashboard .comparison-applicant.selected {
+  border-color: #b7d83d;
+  background: #f7fbe9;
+  box-shadow: 0 0 0 2px rgba(205, 242, 43, 0.12);
+}
+
+.ss-dashboard .comparison-applicant input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  accent-color: #a3c900;
+  cursor: pointer;
+}
+
+.ss-dashboard .pipeline-avatar {
+  width: 43px;
+  height: 43px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #eafa9c;
+  color: #354300;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ss-dashboard .comparison-applicant-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ss-dashboard .comparison-applicant-info strong {
+  color: #25271f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ss-dashboard .comparison-applicant-info span,
+.ss-dashboard .comparison-applicant-info small {
+  color: #85877d;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.ss-dashboard .comparison-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 30px;
+  background: #f0f5dc;
+  color: #627900;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Selection footer */
+
+.ss-dashboard .comparison-selection-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding-top: 19px;
+  margin-top: 20px;
+  border-top: 1px solid #eeede6;
+}
+
+.ss-dashboard .pipeline-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 11px 15px;
+  border: 1px solid #e5e4dc;
+  border-radius: 10px;
+  background: #fff;
+  color: #494b42;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.ss-dashboard .pipeline-cancel-btn:hover {
+  background: #f4f6eb;
+  border-color: #c9df77;
+}
+
+/* Empty and loading */
+
+.ss-dashboard .ss-loading,
+.ss-dashboard .ss-empty {
+  min-height: 190px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  padding: 25px;
+  border-radius: 13px;
+  background: #faf9f5;
+  color: #85877d;
+  text-align: center;
+}
+
+.ss-dashboard .ss-empty h3 {
+  margin: 2px 0 0;
+  color: #35372f;
+  font-size: 16px;
+}
+
+.ss-dashboard .ss-empty p {
+  margin: 0;
+  color: #898b81;
+  font-size: 12px;
+}
+
+/* Comparison report */
+
+.ss-dashboard .comparison-results-card {
+  margin-top: 24px;
+  overflow: hidden;
+}
+
+.ss-dashboard .comparison-results-card .ss-card-head {
+  align-items: center;
+}
+
+.ss-dashboard .comparison-grid {
+  display: grid;
+  grid-template-columns: 155px repeat(2, minmax(190px, 1fr));
+  min-width: 700px;
+  overflow-x: auto;
+  border: 1px solid #eae9e1;
+  border-radius: 13px;
+}
+
+.ss-dashboard .comparison-label-column,
+.ss-dashboard .comparison-candidate-column {
+  min-width: 0;
+  border-right: 1px solid #eae9e1;
+}
+
+.ss-dashboard .comparison-candidate-column:last-child {
+  border-right: 0;
+}
+
+.ss-dashboard .comparison-cell {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eeede7;
+  color: #53554c;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ss-dashboard .comparison-cell:last-child {
+  border-bottom: 0;
+}
+
+.ss-dashboard .comparison-label-column .comparison-cell {
+  background: #f7f7f1;
+  color: #55574d;
+  font-weight: 800;
+}
+
+.ss-dashboard .comparison-header-cell {
+  min-height: 110px;
+  align-items: center;
+  background: #f0f5dc;
+  color: #526500;
+  font-weight: 800;
+}
+
+.ss-dashboard .comparison-person {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.ss-dashboard .comparison-person strong {
+  color: #27291f;
+  font-size: 13px;
+}
+
+.ss-dashboard .comparison-person small {
+  color: #7d8073;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.ss-dashboard .comparison-score {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ss-dashboard .comparison-score strong {
+  color: #627900;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.ss-dashboard .comparison-score-track {
+  height: 7px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #e9ebdf;
+}
+
+.ss-dashboard .comparison-score-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #c5e92a;
+  transition: width 0.3s ease;
+}
+
+.ss-dashboard .comparison-list {
+  margin: 0;
+  padding-left: 17px;
+  line-height: 1.7;
+}
+
+.ss-dashboard .comparison-list li {
+  padding: 1px 0;
+}
+
+.ss-dashboard .comparison-empty {
+  color: #a0a196;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.ss-dashboard .comparison-disclaimer {
+  margin: 16px 0 0;
+  padding: 13px 15px;
+  border-radius: 10px;
+  background: #f8f8f2;
+  color: #77796f;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* Responsive */
+
+@media (max-width: 760px) {
+  .ss-dashboard {
+    padding: 20px 14px;
+  }
+
+  .ss-dashboard .ss-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ss-dashboard .ss-heading .ss-primary-btn {
+    width: 100%;
+  }
+
+  .ss-dashboard .ss-card {
+    padding: 16px;
+  }
+
+  .ss-dashboard .ss-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ss-dashboard .comparison-filters {
+    flex-direction: column;
+  }
+
+  .ss-dashboard .comparison-filters .ss-search,
+  .ss-dashboard .comparison-filters select {
+    width: 100%;
+  }
+
+  .ss-dashboard .comparison-applicant {
+    flex-wrap: wrap;
+  }
+
+  .ss-dashboard .comparison-status {
+    margin-left: 30px;
+  }
+
+  .ss-dashboard .comparison-selection-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .ss-dashboard .comparison-selection-footer button {
+    width: 100%;
+  }
+}

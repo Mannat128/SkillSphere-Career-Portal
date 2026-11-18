@@ -1,5 +1,12 @@
+from app.models.proctoring_violation import ProctoringViolation
 from app.database.base import Base
-from app.models.user import User, UserRole, EmailVerificationToken, PasswordResetToken
+
+from app.models.user import (
+    User,
+    UserRole,
+    EmailVerificationToken,
+    PasswordResetToken,
+)
 from app.models.skill import Skill
 from app.models.candidate import (
     Candidate,
@@ -10,10 +17,28 @@ from app.models.candidate import (
     CandidateCertification,
     JobAlertPreference,
 )
-from app.models.recruiter import Company, Recruiter, RecruiterApprovalStatus
-from app.models.job import Job, JobSkill, SavedJob, JobStatusEnum
-from app.models.resume import Resume, ResumeOCRResult, ResumeAnalysis, OCRStatusEnum
-from app.models.application import Application, ApplicationStatusHistory, ApplicationStatusEnum
+from app.models.recruiter import (
+    Company,
+    Recruiter,
+    RecruiterApprovalStatus,
+)
+from app.models.job import (
+    Job,
+    JobSkill,
+    SavedJob,
+    JobStatusEnum,
+)
+from app.models.resume import (
+    Resume,
+    ResumeOCRResult,
+    ResumeAnalysis,
+    OCRStatusEnum,
+)
+from app.models.application import (
+    Application,
+    ApplicationStatusHistory,
+    ApplicationStatusEnum,
+)
 from app.models.interview import (
     Interview,
     InterviewStatusEnum,
@@ -27,7 +52,10 @@ from app.models.assessment import (
     AssessmentAttempt,
     AssessmentResult,
 )
-from app.models.notification import Notification, NotificationPreference
+from app.models.notification import (
+    Notification,
+    NotificationPreference,
+)
 from app.models.audit import AuditLog
 from app.models.recruiter_assessment import (
     QuestionBankQuestion,
@@ -36,6 +64,18 @@ from app.models.recruiter_assessment import (
     CandidateAssessmentAttempt,
     CandidateAssessmentResult,
 )
+from app.models.proctoring import ProctoringSession
+
+# Support Ticket Models
+from app.models.support_ticket import (
+    SupportTicket,
+    TicketMessage,
+    TicketAttachment,
+    TicketStatus,
+    TicketPriority,
+    TicketCategory,
+)
+
 
 __all__ = [
     "Base",
@@ -82,4 +122,11 @@ __all__ = [
     "AssessmentAssignment",
     "CandidateAssessmentAttempt",
     "CandidateAssessmentResult",
+    "ProctoringSession",
+    "SupportTicket",
+    "TicketMessage",
+    "TicketAttachment",
+    "TicketStatus",
+    "TicketPriority",
+    "TicketCategory",
 ]

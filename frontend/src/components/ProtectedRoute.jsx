@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Navbar from './Navbar';
 import Sidebar from './Sidebar';
+import './AdminLayout.css';
 
 export default function ProtectedRoute({ allowedRoles }) {
   const { user, token, loading } = useAuth();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   if (loading) {
     return (
@@ -19,26 +21,39 @@ export default function ProtectedRoute({ allowedRoles }) {
     );
   }
 
-  if (!token || !user) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!token || !user) return <Navigate to="/login" replace />;
 
-  const userRoleUpper = user?.role ? user.role.toUpperCase() : '';
-  const allowedUpper = allowedRoles ? allowedRoles.map((r) => r.toUpperCase()) : null;
+  const role = String(user?.role || '').toUpperCase();
+  const allowed = allowedRoles ? allowedRoles.map(item => item.toUpperCase()) : null;
 
-  if (allowedUpper && !allowedUpper.includes(userRoleUpper)) {
-    // Redirect to their default dashboard
-    if (userRoleUpper === 'ADMIN') return <Navigate to="/admin/dashboard" replace />;
-    if (userRoleUpper === 'RECRUITER') return <Navigate to="/recruiter/dashboard" replace />;
+  if (allowed && !allowed.includes(role)) {
+    if (role === 'ADMIN') return <Navigate to="/admin/dashboard" replace />;
+    if (role === 'RECRUITER') return <Navigate to="/recruiter/dashboard" replace />;
     return <Navigate to="/candidate/dashboard" replace />;
   }
 
+  const isAdmin = role === 'ADMIN';
+  const sidebarWidth = sidebarCollapsed ? 68 : 232;
+
   return (
-    <div className="app-layout">
-      <Sidebar />
-      <div className="main-content" style={{ padding: 0 }}>
+    <div className={`app-layout${isAdmin ? ' admin-layout' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed(value => !value)}
+      />
+
+      <div
+        className="main-content"
+        style={{
+          marginLeft: `${sidebarWidth}px`,
+          width: `calc(100% - ${sidebarWidth}px)`,
+          minWidth: 0,
+          padding: 0,
+          transition: 'margin-left 220ms ease, width 220ms ease'
+        }}
+      >
         <Navbar />
-        <main style={{ padding: '28px 36px 60px' }}>
+        <main className={isAdmin ? 'admin-page-content' : undefined}>
           <Outlet />
         </main>
       </div>

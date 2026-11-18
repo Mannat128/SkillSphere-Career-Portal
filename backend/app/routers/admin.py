@@ -13,6 +13,7 @@ from app.models.job import Job, JobStatusEnum
 from app.models.application import Application, ApplicationStatusEnum
 from app.models.resume import Resume, ResumeOCRResult, OCRStatusEnum
 from app.models.audit import AuditLog
+from app.models.notification import Notification
 from app.models.interview import Interview
 from app.schemas.admin import (
     UserAdminView,
@@ -195,25 +196,73 @@ def moderate_job(
     admin_user: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
-    """Approve, reject, or disable a job posting."""
+    """Approve, reject, or close a job and notify its recruiter."""
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise NotFoundException("Job")
 
+    if new_status == JobStatusEnum.MODERATION_PENDING:
+        raise BadRequestException(
+            "An administrator cannot move a job back to pending moderation."
+        )
+
+    if new_status == JobStatusEnum.MODERATION_REJECTED and not (notes and notes.strip()):
+        raise BadRequestException(
+            "A rejection reason is required when rejecting a job."
+        )
+
+    previous_status = job.status
     job.status = new_status
-    job.moderation_notes = notes
+    job.moderation_notes = notes.strip() if notes else None
+
+    recruiter = db.query(Recruiter).filter(
+        Recruiter.id == job.recruiter_id
+    ).first()
+
+    if recruiter:
+        if new_status == JobStatusEnum.PUBLISHED:
+            title = "Job Approved"
+            message = f"Your job posting '{job.title}' has been approved and is now published."
+        elif new_status == JobStatusEnum.MODERATION_REJECTED:
+            title = "Job Rejected"
+            message = (
+                f"Your job posting '{job.title}' was rejected. "
+                f"Reason: {job.moderation_notes}"
+            )
+        else:
+            title = "Job Status Updated"
+            message = f"Your job posting '{job.title}' status is now {new_status.value}."
+
+        db.add(Notification(
+            user_id=recruiter.user_id,
+            title=title,
+            message=message,
+            type="ALERT",
+            link="/recruiter/jobs"
+        ))
 
     audit = AuditLog(
         user_id=admin_user.id,
         action="JOB_MODERATED",
         entity_type="job",
         entity_id=job.id,
-        details={"new_status": new_status.value, "notes": notes}
+        details={
+            "previous_status": previous_status.value,
+            "new_status": new_status.value,
+            "notes": job.moderation_notes,
+            "recruiter_user_id": recruiter.user_id if recruiter else None,
+        }
     )
     db.add(audit)
     db.commit()
 
-    return {"message": f"Job status updated to {new_status.value}"}
+    return {
+        "message": f"Job status updated to {new_status.value}",
+        "job_id": job.id,
+        "previous_status": previous_status.value,
+        "new_status": new_status.value,
+        "notification_sent": recruiter is not None,
+    }
 
 # Platform Analytics
 @router.get("/analytics", response_model=PlatformAnalyticsResponse)

@@ -1,0 +1,25 @@
+.ss-pending-page { --pending-lime: #cdf22b; --pending-dark: #171914; --pending-muted: #777b70; }
+.ss-pending-eyebrow { display:flex; align-items:center; gap:7px; margin-bottom:9px; color:#718c16; font-size:10px; font-weight:800; letter-spacing:1.1px; }
+.ss-pending-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:15px; margin-bottom:20px; }
+.ss-pending-stat { display:grid; grid-template-columns:42px 1fr; align-items:center; column-gap:13px; }
+.ss-pending-stat > span { grid-row:span 2; display:grid; place-items:center; width:42px; height:42px; border-radius:12px; background:#eff5d9; color:#526b0e; }
+.ss-pending-stat strong { font-size:25px; line-height:1.1; }
+.ss-pending-stat small { margin-top:4px; color:var(--pending-muted); font-size:11px; }
+.ss-pending-section { margin-bottom:20px; }
+.ss-pending-section-head { display:flex; justify-content:space-between; align-items:flex-start; gap:15px; margin-bottom:18px; }
+.ss-pending-section-head h2 { display:flex; align-items:center; gap:9px; margin:0; font-size:16px; font-weight:800; }
+.ss-pending-section-head h2 svg { color:#718c16; }
+.ss-pending-section-head p { margin:6px 0 0; color:var(--pending-muted); font-size:11px; }
+.ss-pending-section-head > span { flex-shrink:0; padding:6px 10px; border-radius:20px; background:#f0f4e2; color:#627b15; font-size:10px; font-weight:800; }
+.ss-pending-table { min-width:780px; }
+.ss-pending-inline { display:inline-flex; align-items:center; gap:6px; }
+.ss-pending-inline svg { color:#858b78; flex-shrink:0; }
+.ss-pending-empty { display:flex; flex-direction:column; align-items:center; gap:8px; padding:32px 15px; color:#77806a; text-align:center; }
+.ss-pending-empty b { color:var(--pending-dark); font-size:12px; }
+.ss-pending-empty p { margin:0; font-size:10px; }
+.ss-pending-success { margin-bottom:18px; padding:12px 15px; border:1px solid #dce9b7; border-radius:10px; background:#f3f8e5; color:#58720f; font-size:12px; }
+.ss-pending-page button:disabled { opacity:.55; cursor:not-allowed; }
+.ss-pending-spin { animation:ss-pending-rotate 1s linear infinite; }
+@keyframes ss-pending-rotate { to { transform:rotate(360deg); } }
+@media(max-width:800px) { .ss-pending-summary { grid-template-columns:1fr 1fr; } }
+@media(max-width:600px) { .ss-pending-summary { grid-template-columns:1fr; } .ss-pending-section-head { flex-direction:column; } }

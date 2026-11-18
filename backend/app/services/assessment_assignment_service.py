@@ -1,6 +1,7 @@
 import random
 import datetime
 from typing import List, Dict, Any, Tuple, Optional
+
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 
@@ -14,9 +15,11 @@ from app.models.recruiter_assessment import (
 from app.models.job import Job
 from app.models.application import Application
 from app.models.notification import Notification
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import BadRequestException
+
 
 class AssessmentAssignmentService:
+
     @classmethod
     def get_eligible_questions(
         cls,
@@ -24,30 +27,40 @@ class AssessmentAssignmentService:
         recruiter_id: Optional[int],
         categories: Optional[List[str]] = None,
         difficulty: Optional[str] = None,
-        job_id: Optional[int] = None
+        job_id: Optional[int] = None,
     ) -> List[QuestionBankQuestion]:
         """
-        Fetch questions that this recruiter is authorized to use:
-        - Their own private questions (`recruiter_id == recruiter_id`)
-        - Admin-approved shared questions (`is_shared == True`)
-        - Questions created specifically for this job (`job_id == job_id`)
+        Fetch questions authorized for the recruiter:
+        - Shared questions
+        - Recruiter's own private general questions
+        - Questions associated with this specific job
         """
         conditions = [
-            QuestionBankQuestion.is_shared == True,
+            QuestionBankQuestion.is_shared.is_(True),
             and_(
                 QuestionBankQuestion.recruiter_id == recruiter_id,
-                QuestionBankQuestion.job_id.is_(None)
-            )
+                QuestionBankQuestion.job_id.is_(None),
+            ),
         ]
-        if job_id:
-            conditions.append(QuestionBankQuestion.job_id == job_id)
 
-        query = db.query(QuestionBankQuestion).filter(or_(*conditions))
+        if job_id is not None:
+            conditions.append(
+                QuestionBankQuestion.job_id == job_id
+            )
 
-        if categories and len(categories) > 0:
-            query = query.filter(QuestionBankQuestion.category.in_(categories))
+        query = db.query(QuestionBankQuestion).filter(
+            or_(*conditions)
+        )
+
+        if categories:
+            query = query.filter(
+                QuestionBankQuestion.category.in_(categories)
+            )
+
         if difficulty:
-            query = query.filter(QuestionBankQuestion.difficulty == difficulty)
+            query = query.filter(
+                QuestionBankQuestion.difficulty == difficulty
+            )
 
         return query.all()
 
@@ -56,102 +69,184 @@ class AssessmentAssignmentService:
         cls,
         db: Session,
         job_assessment: JobAssessment,
-        recruiter_id: Optional[int]
+        recruiter_id: Optional[int],
     ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
         """
-        Selects and shuffles questions for candidate test assignment.
-        Returns:
-            - assigned_questions: list of question dicts without correct answers
-            - private_answer_key: {str(q_id): correct_option_letter}
+        Select and shuffle the configured number of questions.
+        Correct answers remain in the private answer key.
         """
-        selected_questions: List[QuestionBankQuestion] = []
-        job_id = job_assessment.job_id
+        required_count = int(job_assessment.total_questions or 0)
 
-        if job_assessment.selection_mode == "SPECIFIC" and job_assessment.selected_question_ids:
-            # Explicit recruiter picked questions
-            selected_questions = db.query(QuestionBankQuestion).filter(
-                QuestionBankQuestion.id.in_(job_assessment.selected_question_ids)
-            ).all()
+        if required_count < 1:
+            raise BadRequestException(
+                "Assessment must contain at least one question."
+            )
+
+        job_id = job_assessment.job_id
+        selected_questions: List[QuestionBankQuestion] = []
+
+        if job_assessment.selection_mode == "SPECIFIC":
+            requested_ids = job_assessment.selected_question_ids or []
+
+            if len(set(requested_ids)) != len(requested_ids):
+                raise BadRequestException(
+                    "Selected question IDs must not contain duplicates."
+                )
+
+            if len(requested_ids) < required_count:
+                raise BadRequestException(
+                    f"Select at least {required_count} questions."
+                )
+
+            eligible_pool = cls.get_eligible_questions(
+                db,
+                recruiter_id=recruiter_id,
+                categories=job_assessment.categories,
+                job_id=job_id,
+            )
+
+            eligible_by_id = {
+                question.id: question
+                for question in eligible_pool
+            }
+
+            unauthorized_ids = [
+                question_id
+                for question_id in requested_ids
+                if question_id not in eligible_by_id
+            ]
+
+            if unauthorized_ids:
+                raise BadRequestException(
+                    "One or more selected questions are unavailable "
+                    "or you are not authorized to use them."
+                )
+
+            selected_pool = [
+                eligible_by_id[question_id]
+                for question_id in requested_ids
+            ]
+
+            selected_questions = random.sample(
+                selected_pool,
+                required_count,
+            )
+
         elif job_assessment.difficulty_distribution:
-            # Difficulty distribution (e.g. {"Easy": 3, "Medium": 5, "Hard": 2})
-            for diff, count in job_assessment.difficulty_distribution.items():
-                if count <= 0:
+            distribution = job_assessment.difficulty_distribution
+
+            if sum(distribution.values()) != required_count:
+                raise BadRequestException(
+                    "Difficulty distribution must equal the configured "
+                    "question count."
+                )
+
+            for difficulty, count in distribution.items():
+                if count < 0:
+                    raise BadRequestException(
+                        "Difficulty counts cannot be negative."
+                    )
+
+                if count == 0:
                     continue
+
                 pool = cls.get_eligible_questions(
                     db,
                     recruiter_id=recruiter_id,
                     categories=job_assessment.categories,
-                    difficulty=diff,
-                    job_id=job_id
+                    difficulty=difficulty,
+                    job_id=job_id,
                 )
+
                 if len(pool) < count:
                     raise BadRequestException(
-                        f"Insufficient '{diff}' questions available. Required: {count}, available: {len(pool)}."
+                        f"Insufficient '{difficulty}' questions available. "
+                        f"Required: {count}, available: {len(pool)}."
                     )
-                sampled = random.sample(pool, count)
-                selected_questions.extend(sampled)
+
+                selected_questions.extend(
+                    random.sample(pool, count)
+                )
+
         else:
-            # Generic category random selection
             pool = cls.get_eligible_questions(
                 db,
                 recruiter_id=recruiter_id,
                 categories=job_assessment.categories,
-                job_id=job_id
+                job_id=job_id,
             )
-            req_count = job_assessment.total_questions
-            if len(pool) < req_count:
-                raise BadRequestException(
-                    f"Insufficient questions in Question Bank. Required: {req_count}, available: {len(pool)}."
-                )
-            selected_questions = random.sample(pool, req_count)
 
-        # Shuffle overall question order
+            if len(pool) < required_count:
+                raise BadRequestException(
+                    "Insufficient questions in Question Bank. "
+                    f"Required: {required_count}, available: {len(pool)}."
+                )
+
+            selected_questions = random.sample(
+                pool,
+                required_count,
+            )
+
+        if len(selected_questions) != required_count:
+            raise BadRequestException(
+                "The selected question count does not match the "
+                "assessment configuration."
+            )
+
         random.shuffle(selected_questions)
 
-        assigned_questions = []
+        assigned_questions: List[Dict[str, Any]] = []
         private_answer_key: Dict[str, str] = {}
 
-        for q in selected_questions:
-            # Shuffle answer options while tracking the correct answer
+        for question in selected_questions:
             original_options = [
-                ("A", q.option_a),
-                ("B", q.option_b),
-                ("C", q.option_c),
-                ("D", q.option_d)
+                ("A", question.option_a),
+                ("B", question.option_b),
+                ("C", question.option_c),
+                ("D", question.option_d),
             ]
-            correct_text = dict(original_options)[q.correct_answer]
 
-            # Shuffle the option texts
-            option_texts = [q.option_a, q.option_b, q.option_c, q.option_d]
-            random.shuffle(option_texts)
+            correct_original_letter = (
+                str(question.correct_answer).strip().upper()
+            )
 
-            # Assign new letters A, B, C, D
-            new_options = {
-                "A": option_texts[0],
-                "B": option_texts[1],
-                "C": option_texts[2],
-                "D": option_texts[3]
-            }
+            if correct_original_letter not in {"A", "B", "C", "D"}:
+                raise BadRequestException(
+                    f"Question {question.id} has an invalid answer key."
+                )
 
-            # Find which letter holds the correct text
-            new_correct_letter = "A"
-            for letter, text in new_options.items():
-                if text == correct_text:
-                    new_correct_letter = letter
-                    break
+            shuffled_options = original_options.copy()
+            random.shuffle(shuffled_options)
 
-            private_answer_key[str(q.id)] = new_correct_letter
+            new_options: Dict[str, str] = {}
+            new_correct_letter = None
+
+            for index, (original_letter, option_text) in enumerate(
+                shuffled_options
+            ):
+                new_letter = "ABCD"[index]
+                new_options[new_letter] = option_text
+
+                if original_letter == correct_original_letter:
+                    new_correct_letter = new_letter
+
+            if new_correct_letter is None:
+                raise BadRequestException(
+                    f"Question {question.id} has an invalid answer key."
+                )
+
+            private_answer_key[str(question.id)] = new_correct_letter
 
             assigned_questions.append({
-                "id": q.id,
-                "question_text": q.question_text,
-                "category": q.category,
-                "difficulty": q.difficulty,
+                "id": question.id,
+                "question_text": question.question_text,
+                "category": question.category,
+                "difficulty": question.difficulty,
                 "option_a": new_options["A"],
                 "option_b": new_options["B"],
                 "option_c": new_options["C"],
                 "option_d": new_options["D"],
-                "marks": q.marks,
+                "marks": question.marks,
             })
 
         return assigned_questions, private_answer_key
@@ -160,30 +255,40 @@ class AssessmentAssignmentService:
     def assign_assessment_to_shortlisted_candidate(
         cls,
         db: Session,
-        application: Application
+        application: Application,
     ) -> Optional[AssessmentAssignment]:
         """
-        Triggered when application is SHORTLISTED.
-        Creates assignment if job has enabled assessment, avoiding duplicates.
+        Assign assessment when application is shortlisted.
+        Avoid duplicate assignments.
         """
         job = application.job
-        if not job or not job.assessment_config or not job.assessment_config.is_enabled:
+
+        if (
+            not job
+            or not job.assessment_config
+            or not job.assessment_config.is_enabled
+        ):
             return None
 
-        # Check existing assignment
-        existing = db.query(AssessmentAssignment).filter(
-            AssessmentAssignment.application_id == application.id
-        ).first()
+        existing = (
+            db.query(AssessmentAssignment)
+            .filter(
+                AssessmentAssignment.application_id == application.id
+            )
+            .first()
+        )
+
         if existing:
             return existing
 
         config = job.assessment_config
 
-        # Select questions
-        assigned_questions, private_key = cls.select_questions_for_candidate(
-            db,
-            job_assessment=config,
-            recruiter_id=job.recruiter_id
+        assigned_questions, private_key = (
+            cls.select_questions_for_candidate(
+                db,
+                job_assessment=config,
+                recruiter_id=job.recruiter_id,
+            )
         )
 
         config_snapshot = {
@@ -191,9 +296,12 @@ class AssessmentAssignmentService:
             "instructions": config.instructions,
             "total_questions": len(assigned_questions),
             "duration_minutes": config.duration_minutes,
-            "total_marks": sum(q["marks"] for q in assigned_questions),
+            "total_marks": sum(
+                question["marks"]
+                for question in assigned_questions
+            ),
             "passing_marks": config.passing_marks,
-            "qualification_rule": config.qualification_rule,
+            "qualification_rule": ">",
             "negative_marking": config.negative_marking,
             "negative_marks": config.negative_marks,
         }
@@ -208,113 +316,182 @@ class AssessmentAssignmentService:
             assigned_questions=assigned_questions,
             private_answer_key=private_key,
         )
+
         db.add(assignment)
 
-        # Notify candidate
-        cand_user = application.candidate.user if application.candidate else None
-        if cand_user:
-            notif = Notification(
-                user_id=cand_user.id,
+        candidate_user = (
+            application.candidate.user
+            if application.candidate
+            else None
+        )
+
+        if candidate_user:
+            notification = Notification(
+                user_id=candidate_user.id,
                 title="Assessment Assigned!",
-                message=f"Congratulations! You have been shortlisted for '{job.title}'. Your First Round Assessment '{config.title}' is now available on your dashboard.",
+                message=(
+                    f"Congratulations! You have been shortlisted for "
+                    f"'{job.title}'. Your First Round Assessment "
+                    f"'{config.title}' is now available on your dashboard."
+                ),
                 type="APPLICATION",
-                link="/candidate/assessments"
+                link="/candidate/assessments",
             )
-            db.add(notif)
+            db.add(notification)
 
         db.commit()
         db.refresh(assignment)
+
         return assignment
 
     @classmethod
     def evaluate_attempt(
         cls,
         db: Session,
-        attempt: CandidateAssessmentAttempt
+        attempt: CandidateAssessmentAttempt,
     ) -> CandidateAssessmentResult:
         """
-        Strict backend evaluation:
-        1. Compare candidate's saved answers against private_answer_key.
-        2. Calculate marks with negative marking if enabled.
-        3. Apply recruiter qualification rule (> or >=).
-        4. Save final result and update assignment status.
+        Evaluate candidate answers, calculate marks, apply strict
+        greater-than qualification, save result and update assignment.
+
+        Manual review workflow:
+        - Score is calculated internally.
+        - Candidate cannot see score or automatic qualification.
+        - Assignment remains PENDING_REVIEW.
+        - Recruiter makes the final decision manually.
         """
         assignment = attempt.assignment
-        config = assignment.config_snapshot
-        private_keys: Dict[str, str] = assignment.private_answer_key
-        saved_answers: Dict[str, str] = attempt.saved_answers or {}
 
-        # Map question id to marks
-        q_marks_map = {str(q["id"]): q.get("marks", 1.0) for q in assignment.assigned_questions}
+        if attempt.is_submitted:
+            existing_result = (
+                db.query(CandidateAssessmentResult)
+                .filter(
+                    CandidateAssessmentResult.assignment_id
+                    == assignment.id
+                )
+                .first()
+            )
+
+            if existing_result:
+                return existing_result
+
+            raise BadRequestException(
+                "This assessment attempt has already been submitted."
+            )
+
+        config = assignment.config_snapshot or {}
+        private_keys = assignment.private_answer_key or {}
+        saved_answers = attempt.saved_answers or {}
+
+        question_marks = {
+            str(question["id"]): float(question.get("marks", 1.0))
+            for question in assignment.assigned_questions
+        }
 
         correct_count = 0
         incorrect_count = 0
         unanswered_count = 0
         obtained_marks = 0.0
-        total_marks = sum(q_marks_map.values())
+        total_marks = sum(question_marks.values())
         breakdown = []
 
-        for q in assignment.assigned_questions:
-            q_id_str = str(q["id"])
-            correct_opt = private_keys.get(q_id_str)
-            user_opt = saved_answers.get(q_id_str)
-            q_marks = q.get("marks", 1.0)
+        for question in assignment.assigned_questions:
+            question_id = str(question["id"])
+            correct_option = private_keys.get(question_id)
+            user_option = saved_answers.get(question_id)
 
-            if not user_opt:
+            question_marks_value = float(
+                question.get("marks", 1.0)
+            )
+
+            if not user_option:
                 unanswered_count += 1
                 is_correct = False
                 awarded = 0.0
-            elif user_opt.strip().upper() == correct_opt.strip().upper():
+
+            elif (
+                correct_option
+                and str(user_option).strip().upper()
+                == str(correct_option).strip().upper()
+            ):
                 correct_count += 1
                 is_correct = True
-                awarded = q_marks
-                obtained_marks += q_marks
+                awarded = question_marks_value
+                obtained_marks += question_marks_value
+
             else:
                 incorrect_count += 1
                 is_correct = False
-                deduction = config.get("negative_marks", 0.0) if config.get("negative_marking") else 0.0
+
+                deduction = (
+                    float(config.get("negative_marks", 0.0) or 0.0)
+                    if config.get("negative_marking")
+                    else 0.0
+                )
+
                 awarded = -deduction
                 obtained_marks -= deduction
 
             breakdown.append({
-                "question_id": q["id"],
-                "question_text": q["question_text"],
-                "selected_option": user_opt,
+                "question_id": question["id"],
+                "question_text": question["question_text"],
+                "selected_option": user_option,
                 "is_correct": is_correct,
                 "marks_awarded": awarded,
             })
 
-        # Do not allow obtained marks to drop below 0
         obtained_marks = max(0.0, round(obtained_marks, 2))
-        percentage = round((obtained_marks / float(total_marks)) * 100.0, 1) if total_marks > 0 else 0.0
-        passing_marks = float(config.get("passing_marks", 0.0))
-        rule = config.get("qualification_rule", ">")
 
-        # EXACT Qualification rule comparison
-        if rule == ">=":
-            is_qualified = (obtained_marks >= passing_marks)
-        else: # '>'
-            is_qualified = (obtained_marks > passing_marks)
+        percentage = (
+            round(
+                (obtained_marks / float(total_marks)) * 100.0,
+                1,
+            )
+            if total_marks > 0
+            else 0.0
+        )
+
+        passing_marks = float(config.get("passing_marks", 0.0))
+        qualification_rule = ">"
+
+        # Strict rule: equal marks do NOT qualify.
+        # This is calculated internally for the recruiter scorecard.
+        is_qualified = obtained_marks > passing_marks
 
         qualification_message = (
-            "Congratulations! You have been selected for the next round."
+            "Candidate qualified for the next round."
             if is_qualified
-            else "Thank you for completing the assessment. Unfortunately, you have not qualified for the next round."
+            else "Candidate did not qualify for the next round."
         )
 
         now = datetime.datetime.utcnow()
+
         attempt.is_submitted = True
         attempt.submitted_at = now
-        time_taken = int((now - attempt.started_at).total_seconds()) if attempt.started_at else 0
-        attempt.time_taken_seconds = time_taken
 
-        # Update assignment status
-        assignment.status = "QUALIFIED" if is_qualified else "NOT_QUALIFIED"
+        attempt.time_taken_seconds = (
+            int((now - attempt.started_at).total_seconds())
+            if attempt.started_at
+            else 0
+        )
+
+        # -------------------------------------------------
+        # MANUAL REVIEW WORKFLOW
+        # -------------------------------------------------
+
+        # Candidate status is Pending Review regardless of
+        # the internally calculated score.
+        assignment.status = "PENDING_REVIEW"
         assignment.updated_at = now
 
-        result = db.query(CandidateAssessmentResult).filter(
-            CandidateAssessmentResult.assignment_id == assignment.id
-        ).first()
+        result = (
+            db.query(CandidateAssessmentResult)
+            .filter(
+                CandidateAssessmentResult.assignment_id
+                == assignment.id
+            )
+            .first()
+        )
 
         if not result:
             result = CandidateAssessmentResult(
@@ -329,13 +506,15 @@ class AssessmentAssignmentService:
                 incorrect_count=incorrect_count,
                 unanswered_count=unanswered_count,
                 passing_marks=passing_marks,
-                qualification_rule=rule,
+                qualification_rule=qualification_rule,
                 is_qualified=is_qualified,
                 qualification_message=qualification_message,
                 question_breakdown=breakdown,
-                evaluated_at=now
+                review_status="PENDING_REVIEW",
+                evaluated_at=now,
             )
             db.add(result)
+
         else:
             result.obtained_marks = obtained_marks
             result.total_marks = total_marks
@@ -343,36 +522,77 @@ class AssessmentAssignmentService:
             result.correct_count = correct_count
             result.incorrect_count = incorrect_count
             result.unanswered_count = unanswered_count
+            result.passing_marks = passing_marks
+            result.qualification_rule = qualification_rule
             result.is_qualified = is_qualified
             result.qualification_message = qualification_message
             result.question_breakdown = breakdown
+
+            result.review_status = "PENDING_REVIEW"
+            result.reviewed_by_id = None
+            result.reviewed_at = None
+            result.review_notes = None
+
             result.evaluated_at = now
 
-        # Notify Candidate of completion
-        cand_user = assignment.candidate.user if assignment.candidate else None
-        if cand_user:
-            notif = Notification(
-                user_id=cand_user.id,
-                title="Assessment Result Available",
-                message=f"Your result for '{config.get('title')}' is now available. {qualification_message}",
-                type="APPLICATION",
-                link=f"/candidate/assessments/{assignment.id}/result"
-            )
-            db.add(notif)
+        # -------------------------------------------------
+        # CANDIDATE NOTIFICATION
+        # -------------------------------------------------
 
-        # Notify Recruiter of test submission
-        job = assignment.job
-        if job and job.recruiter and job.recruiter.user:
-            rec_status_text = "QUALIFIED" if is_qualified else "DID NOT QUALIFY"
-            notif = Notification(
-                user_id=job.recruiter.user.id,
-                title="Assessment Completed",
-                message=f"{cand_user.full_name if cand_user else 'A candidate'} completed the assessment for '{job.title}' and {rec_status_text} (Score: {obtained_marks}/{total_marks}).",
+        # Candidate receives neutral submission notification.
+        # No score or qualification verdict is disclosed.
+        candidate_user = (
+            assignment.candidate.user
+            if assignment.candidate
+            else None
+        )
+
+        if candidate_user:
+            candidate_notification = Notification(
+                user_id=candidate_user.id,
+                title="Assessment Submitted",
+                message=(
+                    f"Your assessment for '{config.get('title')}' "
+                    "has been submitted successfully and is pending "
+                    "recruiter review. You will be notified once the "
+                    "recruiter makes a decision."
+                ),
                 type="APPLICATION",
-                link=f"/recruiter/assessments/results"
+                link="/candidate/assessments",
             )
-            db.add(notif)
+            db.add(candidate_notification)
+
+        # -------------------------------------------------
+        # RECRUITER NOTIFICATION
+        # -------------------------------------------------
+
+        # Internal score and automated threshold result are
+        # visible only to the recruiter.
+        job = assignment.job
+
+        if job and job.recruiter and job.recruiter.user:
+            automatic_status = (
+                "meets the score threshold"
+                if is_qualified
+                else "does not meet the score threshold"
+            )
+
+            recruiter_notification = Notification(
+                user_id=job.recruiter.user.id,
+                title="Assessment Awaiting Review",
+                message=(
+                    f"{candidate_user.full_name if candidate_user else 'A candidate'} "
+                    f"completed the assessment for '{job.title}'. "
+                    f"Score: {obtained_marks}/{total_marks}. "
+                    f"The candidate {automatic_status}. "
+                    "Please review the scorecard and make the final decision."
+                ),
+                type="APPLICATION",
+                link="/recruiter/assessments/results",
+            )
+            db.add(recruiter_notification)
 
         db.commit()
         db.refresh(result)
+
         return result

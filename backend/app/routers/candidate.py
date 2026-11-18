@@ -859,82 +859,200 @@ def download_built_resume(
     current_user: User = Depends(get_current_user),
     candidate: Candidate = Depends(get_current_candidate)
 ):
-    """Generate and stream a professional PDF resume using candidate's verified profile information."""
+    """Generate a multi-page resume from the candidate's saved profile."""
     output = io.BytesIO()
     p = canvas.Canvas(output, pagesize=letter)
-    p.setTitle(f"{current_user.full_name} – SkillSphere Resume")
+    p.setTitle(f"{current_user.full_name or 'Candidate'} - SkillSphere Resume")
 
-    # Header Name & Contact
-    p.setFont("Helvetica-Bold", 20)
-    p.drawString(50, 750, current_user.full_name)
+    page_width, page_height = letter
+    left, right = 50, page_width - 50
+    max_width = right - left
+    y = page_height - 55
 
-    p.setFont("Helvetica", 10)
-    contact_parts = [current_user.email]
-    if candidate.phone:
-        contact_parts.append(candidate.phone)
-    if candidate.location:
-        contact_parts.append(candidate.location)
-    p.drawString(50, 735, " | ".join(contact_parts))
-    p.line(50, 725, 560, 725)
+    def new_page():
+        nonlocal y
+        p.showPage()
+        y = page_height - 55
 
-    y = 705
+    def ensure_space(height=20):
+        nonlocal y
+        if y - height < 50:
+            new_page()
 
-    # Professional Summary
-    if candidate.bio or candidate.headline:
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, y, "PROFESSIONAL SUMMARY")
-        y -= 15
-        p.setFont("Helvetica", 10)
-        summary_text = candidate.bio or candidate.headline
-        p.drawString(50, y, summary_text[:100])
-        y -= 25
+    def draw_wrapped(value, font="Helvetica", size=9, indent=0, line_gap=3):
+        """Draw text with wrapping and automatic page breaks."""
+        nonlocal y
+        if value is None:
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        # ReportLab's built-in Helvetica fonts use WinAnsi; replace unsupported
+        # characters safely so a candidate's data cannot break PDF generation.
+        text = text.encode("cp1252", errors="replace").decode("cp1252")
+        words = text.split()
+        p.setFont(font, size)
+        line = ""
+        for word in words:
+            trial = f"{line} {word}".strip()
+            if p.stringWidth(trial, font, size) <= max_width - indent:
+                line = trial
+            else:
+                if line:
+                    ensure_space(size + line_gap)
+                    p.drawString(left + indent, y, line)
+                    y -= size + line_gap
+                # Split exceptionally long URLs/tokens to avoid drawing off-page.
+                if p.stringWidth(word, font, size) > max_width - indent:
+                    chunk = ""
+                    for char in word:
+                        if p.stringWidth(chunk + char, font, size) <= max_width - indent:
+                            chunk += char
+                        else:
+                            ensure_space(size + line_gap)
+                            p.drawString(left + indent, y, chunk)
+                            y -= size + line_gap
+                            chunk = char
+                    line = chunk
+                else:
+                    line = word
+        if line:
+            ensure_space(size + line_gap)
+            p.drawString(left + indent, y, line)
+            y -= size + line_gap
 
-    # Technical Skills
+    def draw_section(title):
+        nonlocal y
+        ensure_space(34)
+        y -= 6
+        p.setFont("Helvetica-Bold", 11)
+        p.drawString(left, y, title.upper())
+        y -= 5
+        p.setStrokeColorRGB(0.72, 0.76, 0.81)
+        p.line(left, y, right, y)
+        y -= 14
+
+    def draw_item_title(title, subtitle=None):
+        nonlocal y
+        ensure_space(28)
+        draw_wrapped(title, "Helvetica-Bold", 9.5)
+        if subtitle:
+            draw_wrapped(subtitle, "Helvetica", 9)
+
+    # Header and contact details
+    name = current_user.full_name or "Candidate"
+    draw_wrapped(name, "Helvetica-Bold", 20)
+    if candidate.headline:
+        draw_wrapped(candidate.headline, "Helvetica-Oblique", 10)
+    contacts = [current_user.email, candidate.phone, candidate.location]
+    contacts = [str(item).strip() for item in contacts if item]
+    if contacts:
+        draw_wrapped(" | ".join(contacts), "Helvetica", 8.5)
+    y -= 4
+    p.setStrokeColorRGB(0.15, 0.18, 0.22)
+    p.line(left, y, right, y)
+    y -= 16
+
+    # Professional summary
+    summary = candidate.bio or candidate.headline
+    if summary:
+        draw_section("Professional Summary")
+        draw_wrapped(summary)
+        y -= 6
+
+    # Technical skills
     if candidate.skills:
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, y, "TECHNICAL SKILLS")
-        y -= 15
-        p.setFont("Helvetica", 10)
-        skill_names = [cs.skill.name for cs in candidate.skills if cs.skill]
-        p.drawString(50, y, ", ".join(skill_names[:12]))
-        y -= 25
+        skill_names = [
+            cs.skill.name for cs in candidate.skills
+            if cs.skill and cs.skill.name
+        ]
+        if skill_names:
+            draw_section("Technical Skills")
+            draw_wrapped(" | ".join(skill_names))
+            y -= 6
 
-    # Experience
+    # Work experience
     if candidate.experiences:
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, y, "WORK EXPERIENCE")
-        y -= 15
-        p.setFont("Helvetica", 10)
-        for exp in candidate.experiences[:3]:
-            p.setFont("Helvetica-Bold", 10)
-            p.drawString(50, y, f"{exp.position} - {exp.company}")
-            y -= 12
-            p.setFont("Helvetica", 9)
+        draw_section("Work Experience")
+        for exp in candidate.experiences:
+            title = " - ".join(
+                str(value) for value in (exp.position, exp.company) if value
+            ) or "Work Experience"
+            draw_item_title(title)
+            dates = " - ".join(
+                str(value) for value in (
+                    exp.start_date,
+                    "Present" if exp.is_current else exp.end_date
+                ) if value
+            )
+            if dates:
+                draw_wrapped(dates, "Helvetica-Oblique", 8)
+            if exp.location:
+                draw_wrapped(exp.location, "Helvetica", 8)
             if exp.description:
-                p.drawString(60, y, exp.description[:90])
-                y -= 15
-            y -= 5
+                draw_wrapped(exp.description, "Helvetica", 9, indent=8)
+            y -= 6
+
+    # Projects
+    if candidate.projects:
+        draw_section("Projects")
+        for project in candidate.projects:
+            draw_item_title(project.title or "Project")
+            if project.description:
+                draw_wrapped(project.description, "Helvetica", 9, indent=8)
+            if project.technologies:
+                draw_wrapped(
+                    f"Technologies: {project.technologies}",
+                    "Helvetica-Bold", 8, indent=8
+                )
+            if project.project_url:
+                draw_wrapped(
+                    f"Project URL: {project.project_url}",
+                    "Helvetica", 8, indent=8
+                )
+            y -= 6
 
     # Education
     if candidate.educations:
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, y, "EDUCATION")
-        y -= 15
-        for edu in candidate.educations[:2]:
-            p.setFont("Helvetica-Bold", 10)
-            p.drawString(50, y, f"{edu.degree} in {edu.field_of_study or 'General Studies'}")
-            y -= 12
-            p.setFont("Helvetica", 9)
-            p.drawString(60, y, f"{edu.institution} ({edu.graduation_year or 'Completed'})")
-            y -= 18
+        draw_section("Education")
+        for edu in candidate.educations:
+            degree = " - ".join(
+                str(value) for value in (edu.degree, edu.field_of_study) if value
+            ) or "Education"
+            draw_item_title(degree, edu.institution)
+            details = []
+            if edu.graduation_year:
+                details.append(str(edu.graduation_year))
+            if edu.grade:
+                details.append(f"Grade: {edu.grade}")
+            if details:
+                draw_wrapped(" | ".join(details), "Helvetica", 8)
+            y -= 5
 
-    p.showPage()
+    # Certifications
+    if candidate.certifications:
+        draw_section("Certifications")
+        for cert in candidate.certifications:
+            draw_item_title(
+                cert.name or "Certification",
+                cert.issuing_organization
+            )
+            if cert.issue_date:
+                draw_wrapped(
+                    f"Issue Date: {cert.issue_date}", "Helvetica", 8
+                )
+            if cert.credential_url:
+                draw_wrapped(
+                    f"Credential URL: {cert.credential_url}",
+                    "Helvetica", 8, indent=8
+                )
+            y -= 5
+
     p.save()
     output.seek(0)
-
-    filename = f"{current_user.full_name.replace(' ', '_')}_Resume.pdf"
+    filename = f"{name.replace(' ', '_')}_Resume.pdf"
     return Response(
         content=output.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )

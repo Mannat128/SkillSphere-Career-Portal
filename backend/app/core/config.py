@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # AI configuration
     AI_PROVIDER: str = "google_gemini"
     AI_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = None
+
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    OPENAI_MODEL: str = "gpt-4o-mini"
 
     # Upload configuration
     UPLOAD_DIR: str = os.path.join(BASE_DIR, "uploads")

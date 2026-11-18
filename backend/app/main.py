@@ -1,4 +1,4 @@
-
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,8 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.services.init_db import init_db
+from app.services.proctoring_scheduler import (
+    run_proctoring_cleanup_scheduler,
+)
 
-# Import all routers
 from app.routers import (
     auth,
     candidate,
@@ -27,12 +29,18 @@ from app.routers import (
     question_bank,
     recruiter_assessments,
     candidate_assessments,
+    assessment_reviews,
+    proctoring,
+    support_tickets,
+    support_ticket_admin,  # NEW: Admin Ticket Assignment & Priority
+    computer_vision,
+    sphera_ai,
 )
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
 logger = logging.getLogger("SkillSphere")
@@ -40,58 +48,55 @@ logger = logging.getLogger("SkillSphere")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application startup and shutdown events.
-    Initializes admin provisioning and default master records.
-    """
     logger.info("Starting SkillSphere Backend Application...")
 
     db = SessionLocal()
 
     try:
         init_db(db)
-    except Exception as e:
-        logger.error(f"Error during init_db: {e}")
+    except Exception:
+        logger.exception("Error during database initialization.")
     finally:
         db.close()
+
+    cleanup_task = asyncio.create_task(
+        run_proctoring_cleanup_scheduler()
+    )
 
     yield
 
     logger.info("Shutting down SkillSphere Backend Application...")
+
+    cleanup_task.cancel()
+
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        logger.info("Proctoring cleanup scheduler stopped.")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
     description=(
         "Full-stack Career & Job Portal REST API with Resume OCR, "
-        "AI Matching, and Recruitment Analytics."
+        "AI Matching, Recruitment Analytics, AI Proctoring "
+        "and Sphera AI Support Assistant."
     ),
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
-# ==========================================
-# STATIC FILES - PROFILE PICTURES & UPLOADS
-# ==========================================
-
-# Ensure upload directory exists
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-# Serve uploaded files through the backend
-# Example: /uploads/avatars/profile.jpg
 app.mount(
     "/uploads",
     StaticFiles(directory=settings.UPLOAD_DIR),
-    name="uploads"
+    name="uploads",
 )
 
-
-# ==========================================
-# CORS MIDDLEWARE
-# ==========================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -102,11 +107,12 @@ app.add_middleware(
 )
 
 
-# ==========================================
-# REGISTER API V1 ROUTERS
-# ==========================================
-
 api_v1 = settings.API_V1_PREFIX
+
+
+# ---------------------------------------------------------
+# EXISTING APPLICATION ROUTERS
+# ---------------------------------------------------------
 
 app.include_router(auth.router, prefix=api_v1)
 app.include_router(candidate.router, prefix=api_v1)
@@ -120,13 +126,91 @@ app.include_router(recruiter.router, prefix=api_v1)
 app.include_router(admin.router, prefix=api_v1)
 app.include_router(notifications.router, prefix=api_v1)
 app.include_router(question_bank.router, prefix=api_v1)
-app.include_router(recruiter_assessments.router, prefix=api_v1)
-app.include_router(candidate_assessments.router, prefix=api_v1)
 
 
-# ==========================================
-# HEALTH CHECK ROUTES
-# ==========================================
+# ---------------------------------------------------------
+# RECRUITER AND CANDIDATE ASSESSMENTS
+# ---------------------------------------------------------
+
+app.include_router(
+    recruiter_assessments.router,
+    prefix=api_v1,
+)
+
+app.include_router(
+    candidate_assessments.router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# MANUAL RECRUITER ASSESSMENT REVIEW
+# ---------------------------------------------------------
+
+app.include_router(
+    assessment_reviews.router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# PROCTORING AND COMPUTER VISION
+# ---------------------------------------------------------
+
+app.include_router(
+    proctoring.router,
+    prefix=api_v1,
+)
+
+app.include_router(
+    computer_vision.router,
+    prefix=api_v1,
+)
+
+app.include_router(
+    proctoring.recruiter_router,
+    prefix=api_v1,
+)
+
+app.include_router(
+    proctoring.admin_router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# SUPPORT TICKET SYSTEM
+# ---------------------------------------------------------
+
+app.include_router(
+    support_tickets.router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# ADMIN SUPPORT TICKET MANAGEMENT
+# ---------------------------------------------------------
+
+app.include_router(
+    support_ticket_admin.router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# SPHERA AI SUPPORT ASSISTANT
+# ---------------------------------------------------------
+
+app.include_router(
+    sphera_ai.router,
+    prefix=api_v1,
+)
+
+
+# ---------------------------------------------------------
+# ROOT / HEALTH ENDPOINTS
+# ---------------------------------------------------------
 
 @app.get("/", tags=["Health"])
 def root():
@@ -134,7 +218,7 @@ def root():
         "app": settings.APP_NAME,
         "status": "online",
         "documentation": "/docs",
-        "version": "1.0.0"
+        "version": "1.0.0",
     }
 
 
@@ -142,5 +226,5 @@ def root():
 def health_check():
     return {
         "status": "healthy",
-        "database": "connected"
+        "database": "connected",
     }

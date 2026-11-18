@@ -1,0 +1,608 @@
+
+/* ================================
+   SKILLSPHERE ADMIN DASHBOARD
+================================ */
+
+.ss-dashboard {
+  --admin-bg: #f5f5ed;
+  --admin-card: #ffffff;
+  --admin-dark: #171914;
+  --admin-muted: #777b70;
+  --admin-lime: #cdf22b;
+  --admin-border: #e8eadd;
+  --admin-amber: #e8a32b;
+
+  min-height: 100vh;
+  padding: 30px;
+  background: var(--admin-bg);
+  color: var(--admin-dark);
+  font-family: inherit;
+}
+
+.ss-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+
+.ss-heading h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.ss-heading p {
+  margin: 7px 0 0;
+  color: var(--admin-muted);
+  font-size: 13px;
+}
+
+.ss-primary-btn,
+.ss-admin-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 17px;
+  background: var(--admin-dark);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: .2s ease;
+}
+
+.ss-primary-btn:hover,
+.ss-admin-actions button:hover {
+  background: #30352a;
+  transform: translateY(-2px);
+}
+
+/* Navigation */
+
+.ss-admin-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px;
+  margin-bottom: 24px;
+  border: 1px solid var(--admin-border);
+  border-radius: 14px;
+  background: var(--admin-card);
+}
+
+.ss-admin-tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 15px;
+  border-radius: 9px;
+  color: #666b60;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: .2s ease;
+}
+
+.ss-admin-tabs a:hover {
+  background: #f3f5e9;
+  color: var(--admin-dark);
+}
+
+.ss-admin-tabs a.active {
+  background: var(--admin-dark);
+  color: var(--admin-lime);
+}
+
+/* Cards and KPI */
+
+.ss-card {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--admin-border);
+  border-radius: 17px;
+  background: var(--admin-card);
+  box-shadow: 0 5px 22px rgba(23, 25, 20, .035);
+}
+
+.ss-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.ss-kpi {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-height: 112px;
+}
+
+.ss-kpi-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: #eff5d9;
+  color: #455a0a;
+}
+
+.ss-kpi-icon.amber {
+  background: #fff2d9;
+  color: #a56a08;
+}
+
+.ss-kpi b {
+  display: block;
+  font-size: 27px;
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.ss-kpi small {
+  display: block;
+  margin-top: 5px;
+  color: var(--admin-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Overview sections */
+
+.ss-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.ss-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.ss-card-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.ss-card-head > svg {
+  color: #777d6d;
+}
+
+.ss-card-head a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #647d12;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.ss-admin-distribution {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: 25px;
+  padding: 8px 0;
+}
+
+.ss-donut {
+  display: grid;
+  place-items: center;
+  width: 155px;
+  height: 155px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  position: relative;
+}
+
+.ss-donut::before {
+  content: "";
+  position: absolute;
+  width: 105px;
+  height: 105px;
+  border-radius: 50%;
+  background: white;
+}
+
+.ss-donut > div {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+}
+
+.ss-donut b {
+  display: block;
+  font-size: 25px;
+  font-weight: 800;
+}
+
+.ss-donut small {
+  color: var(--admin-muted);
+  font-size: 11px;
+}
+
+.ss-legend {
+  flex: 1;
+  display: grid;
+  gap: 16px;
+}
+
+.ss-legend > div {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+}
+
+.ss-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.ss-legend span {
+  color: var(--admin-muted);
+}
+
+.ss-legend b {
+  font-size: 12px;
+}
+
+.ss-overview-list {
+  display: grid;
+}
+
+.ss-overview-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 14px 0;
+  border-bottom: 1px solid #eff0e9;
+  font-size: 12px;
+}
+
+.ss-overview-list > div:last-child {
+  border-bottom: 0;
+}
+
+.ss-overview-list span {
+  color: var(--admin-muted);
+}
+
+.ss-overview-list b {
+  font-weight: 750;
+}
+
+.ss-admin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.ss-admin-actions button:first-child {
+  background: var(--admin-lime);
+  color: var(--admin-dark);
+}
+
+.ss-admin-actions button:first-child:hover {
+  background: #b9df20;
+}
+
+/* Tables */
+
+.ss-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ss-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ss-table th {
+  padding: 13px 15px;
+  background: #f6f7f0;
+  color: #74796d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .65px;
+  text-transform: uppercase;
+}
+
+.ss-table th:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.ss-table th:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.ss-table td {
+  padding: 15px;
+  border-bottom: 1px solid #eff0e9;
+  color: #55594f;
+  font-size: 12px;
+}
+
+.ss-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ss-table tbody tr:hover {
+  background: #fafbf6;
+}
+
+.ss-table td b {
+  display: block;
+  color: var(--admin-dark);
+  font-weight: 750;
+}
+
+.ss-table td small {
+  display: block;
+  margin-top: 4px;
+  color: #93978c;
+  font-size: 10px;
+}
+
+.ss-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 20px;
+  background: #eff4df;
+  color: #566c12;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: capitalize;
+}
+
+.ss-action-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ss-small-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 11px;
+  border: 1px solid #dfe5ca;
+  border-radius: 8px;
+  background: #f5f8e9;
+  color: #45570e;
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: .2s ease;
+}
+
+.ss-small-btn:hover {
+  background: var(--admin-lime);
+  border-color: var(--admin-lime);
+  color: var(--admin-dark);
+}
+
+.ss-small-btn.danger {
+  border-color: #f0d9d5;
+  background: #fff4f2;
+  color: #b34538;
+}
+
+.ss-small-btn.danger:hover {
+  border-color: #e9b5ad;
+  background: #fce5e1;
+}
+
+/* Search */
+
+.ss-search {
+  width: min(250px, 100%);
+  padding: 10px 13px;
+  border: 1px solid var(--admin-border);
+  border-radius: 9px;
+  outline: none;
+  background: #fafbf7;
+  color: var(--admin-dark);
+  font-size: 11px;
+}
+
+.ss-search:focus {
+  border-color: #a8cb28;
+  box-shadow: 0 0 0 3px rgba(205, 242, 43, .16);
+}
+
+/* Feedback */
+
+.ss-notice {
+  margin-bottom: 18px;
+  padding: 13px 16px;
+  border: 1px solid #f0d2cc;
+  border-radius: 10px;
+  background: #fff2ef;
+  color: #a43f32;
+  font-size: 12px;
+}
+
+.ss-loading,
+.ss-empty {
+  padding: 35px 20px;
+  color: var(--admin-muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+.ss-empty {
+  border-top: 1px solid #eff0e9;
+}
+
+/* Responsive */
+
+@media (max-width: 1050px) {
+  .ss-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ss-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 650px) {
+  .ss-dashboard {
+    padding: 17px;
+  }
+
+  .ss-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ss-heading h1 {
+    font-size: 23px;
+  }
+
+  .ss-admin-tabs {
+    gap: 5px;
+  }
+
+  .ss-admin-tabs a {
+    padding: 9px 10px;
+    font-size: 10px;
+  }
+
+  .ss-kpis {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .ss-kpi {
+    min-height: 90px;
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .ss-kpi b {
+    font-size: 22px;
+  }
+
+  .ss-kpi-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .ss-card {
+    padding: 15px;
+  }
+
+  .ss-admin-distribution {
+    flex-direction: column;
+  }
+
+  .ss-legend {
+    width: 100%;
+  }
+
+  .ss-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ss-search {
+    width: 100%;
+  }
+
+  .ss-admin-actions {
+    flex-wrap: wrap;
+  }
+}
+
+
+/* Consistent admin review-page styling */
+.ss-dashboard:not(.ss-pending-page) {
+  background: #f5f5ed;
+  border-radius: 0;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-heading {
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-heading h1 {
+  font-size: 30px;
+  letter-spacing: -1.1px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-heading p {
+  font-size: 13px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-primary-btn {
+  background: #cdf22b;
+  color: #171914;
+  min-height: 42px;
+  padding: 11px 18px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-primary-btn:hover {
+  background: #b9df20;
+  color: #171914;
+}
+
+.ss-dashboard:not(.ss-pending-page) > section.ss-card {
+  margin-bottom: 20px;
+  padding: 22px;
+  border: 1px solid #e8eadd;
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 5px 22px rgba(23, 25, 20, .035);
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-card-head {
+  margin-bottom: 18px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-table th {
+  background: #f6f7f0;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-table td {
+  padding-top: 15px;
+  padding-bottom: 15px;
+}
+
+.ss-dashboard:not(.ss-pending-page) .ss-kpi {
+  border: 1px solid #e8eadd;
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 5px 22px rgba(23, 25, 20, .035);
+}
+
+@media (max-width: 650px) {
+  .ss-dashboard:not(.ss-pending-page) > section.ss-card {
+    padding: 15px;
+  }
+}

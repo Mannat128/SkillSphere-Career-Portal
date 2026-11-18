@@ -1,20 +1,22 @@
+
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Query, status
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
 from app.database.session import get_db
-from app.core.dependencies import get_current_user, get_current_candidate
-from app.core.exceptions import NotFoundException, BadRequestException
-from app.models.user import User, UserRole
+from app.core.dependencies import get_current_candidate
+from app.core.exceptions import NotFoundException
 from app.models.candidate import Candidate
 from app.models.job import Job, JobSkill, SavedJob, JobStatusEnum
 from app.models.recruiter import Company
 from app.models.skill import Skill
-from app.models.application import Application
 from app.schemas.job import JobResponse, JobListResponse
 
+
 router = APIRouter(prefix="/jobs", tags=["Jobs & Search"])
+
 
 @router.get("", response_model=JobListResponse)
 def search_jobs(
@@ -28,14 +30,9 @@ def search_jobs(
     page_size: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
-    """
-    Candidate & Public Job Search:
-    Search published jobs with keyword, location, experience, job type, required skills,
-    pagination, and sorting.
-    """
+    """Search published jobs with filters, pagination and sorting."""
     query = db.query(Job).filter(Job.status == JobStatusEnum.PUBLISHED)
 
-    # 1. Keyword search
     if keyword and keyword.strip():
         term = f"%{keyword.strip()}%"
         query = query.join(Job.company).filter(
@@ -46,28 +43,22 @@ def search_jobs(
             )
         )
 
-    # 2. Location filter
     if location and location.strip():
         query = query.filter(Job.location.ilike(f"%{location.strip()}%"))
 
-    # 3. Experience filter
     if experience_level and experience_level.strip():
         query = query.filter(Job.experience_level.ilike(experience_level.strip()))
 
-    # 4. Employment type filter
     if employment_type and employment_type.strip():
         query = query.filter(Job.employment_type.ilike(employment_type.strip()))
 
-    # 5. Skill filter
     if skill and skill.strip():
         query = query.join(Job.required_skills).join(JobSkill.skill).filter(
             Skill.name.ilike(skill.strip())
         )
 
-    # Total count
     total = query.distinct().count()
 
-    # Sorting
     if sort_by == "salary_high":
         query = query.order_by(desc(Job.max_salary))
     elif sort_by == "salary_low":
@@ -75,7 +66,6 @@ def search_jobs(
     else:
         query = query.order_by(desc(Job.created_at))
 
-    # Pagination
     offset = (page - 1) * page_size
     jobs = query.distinct().offset(offset).limit(page_size).all()
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
@@ -113,6 +103,7 @@ def search_jobs(
         "total_pages": total_pages
     }
 
+
 @router.get("/saved", response_model=List[JobResponse])
 @router.get("/saved/all", response_model=List[JobResponse])
 def get_saved_jobs(
@@ -120,11 +111,15 @@ def get_saved_jobs(
     db: Session = Depends(get_db)
 ):
     """Retrieve all bookmarked jobs for the current candidate."""
-    saved = db.query(SavedJob).filter(SavedJob.candidate_id == candidate.id).all()
+    saved = db.query(SavedJob).filter(
+        SavedJob.candidate_id == candidate.id
+    ).all()
+
     results = []
     for s in saved:
         j = s.job
         skill_names = [js.skill.name for js in j.required_skills if js.skill]
+
         results.append({
             "id": j.id,
             "recruiter_id": j.recruiter_id,
@@ -147,7 +142,9 @@ def get_saved_jobs(
             "total_applicants": len(j.applications),
             "is_saved": True
         })
+
     return results
+
 
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job_detail(
@@ -156,10 +153,12 @@ def get_job_detail(
 ):
     """View full job description and requirements."""
     job = db.query(Job).filter(Job.id == job_id).first()
+
     if not job:
         raise NotFoundException("Job")
 
     skill_names = [js.skill.name for js in job.required_skills if js.skill]
+
     return {
         "id": job.id,
         "recruiter_id": job.recruiter_id,
@@ -182,6 +181,7 @@ def get_job_detail(
         "total_applicants": len(job.applications)
     }
 
+
 @router.post("/{job_id}/save")
 def bookmark_job(
     job_id: int,
@@ -190,6 +190,7 @@ def bookmark_job(
 ):
     """Save / bookmark a job to candidate's wishlist."""
     job = db.query(Job).filter(Job.id == job_id).first()
+
     if not job:
         raise NotFoundException("Job")
 
@@ -204,6 +205,7 @@ def bookmark_job(
         db.commit()
 
     return {"message": "Job bookmarked successfully"}
+
 
 @router.delete("/{job_id}/save")
 def remove_bookmark(

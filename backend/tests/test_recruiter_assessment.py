@@ -221,7 +221,7 @@ def test_first_round_assessment_end_to_end_flow():
             "duration_minutes": 15,
             "total_marks": 5.0,
             "passing_marks": 3.0,
-            "qualification_rule": ">=",
+            "qualification_rule": ">",
             "negative_marking": False,
             "negative_marks": 0.0,
             "categories": ["Python", "React", "SQL"],
@@ -232,7 +232,7 @@ def test_first_round_assessment_end_to_end_flow():
     config_data = config_res.json()
     assert config_data["is_enabled"] is True
     assert config_data["passing_marks"] == 3.0
-    assert config_data["qualification_rule"] == ">="
+    assert config_data["qualification_rule"] == ">"
 
     # 3. Candidate applies for job
     apply_res = client.post(f"/api/v1/applications/jobs/{job_id}/apply", headers=cand_headers, json={})
@@ -296,12 +296,23 @@ def test_first_round_assessment_end_to_end_flow():
     )
     assert submit_res.status_code == 200
     result_data = submit_res.json()
-    assert "is_qualified" in result_data
-    assert "qualification_message" in result_data
-    if result_data["is_qualified"]:
-        assert "selected for the next round" in result_data["qualification_message"]
-    else:
-        assert "not qualified for the next round" in result_data["qualification_message"]
+    # Candidate response intentionally hides score and qualification verdict.
+    assert result_data["message"] == "Your assessment has been submitted successfully."
+    assert "is_qualified" not in result_data
+    assert "qualification_message" not in result_data
+    assert "obtained_marks" not in result_data
+    assert "total_marks" not in result_data
+
+    # Result endpoint must also remain neutral for the candidate.
+    candidate_result_res = client.get(
+        f"/api/v1/candidate/first-round-assessments/{assignment_id}/result",
+        headers=cand_headers,
+    )
+    assert candidate_result_res.status_code == 200
+    candidate_result = candidate_result_res.json()
+    assert candidate_result["message"] == "Your assessment has been submitted successfully."
+    assert "is_qualified" not in candidate_result
+    assert "obtained_marks" not in candidate_result
 
     # 9. Retake attempt blocked
     retake_res = client.post(
@@ -320,3 +331,38 @@ def test_first_round_assessment_end_to_end_flow():
     assert len(rec_results) >= 1
     assert rec_results[0]["job_id"] == job_id
     assert "obtained_marks" in rec_results[0]
+
+
+def test_assessment_config_rejects_non_strict_qualification_rule():
+    """Qualification rule is fixed to strict greater-than, never >=."""
+    rec_headers, _ = create_recruiter_and_login()
+    job_res = client.post(
+        "/api/v1/recruiter/jobs",
+        headers=rec_headers,
+        json={
+            "title": "Qualification Rule Test Job",
+            "description": "Testing strict qualification configuration.",
+            "location": "Remote",
+            "employment_type": "Full-time",
+            "experience_level": "Entry-Level",
+            "required_skills": ["Python"],
+        },
+    )
+    assert job_res.status_code == 201
+    job_id = job_res.json()["id"]
+
+    config_payload = {
+        "is_enabled": True,
+        "title": "Strict Qualification Test",
+        "total_questions": 1,
+        "duration_minutes": 5,
+        "total_marks": 1.0,
+        "passing_marks": 1.0,
+        "qualification_rule": ">=",
+        "negative_marking": False,
+        "negative_marks": 0.0,
+        "categories": ["Python"],
+        "selection_mode": "RANDOM",
+    }
+    res = client.post(f"/api/v1/jobs/{job_id}/assessment", headers=rec_headers, json=config_payload)
+    assert res.status_code == 422

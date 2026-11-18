@@ -1,18 +1,19 @@
+
 import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, status
+
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from app.database.session import get_db
-from app.core.dependencies import get_current_user, get_current_candidate
-from app.core.exceptions import NotFoundException, BadRequestException, ForbiddenException
-from app.models.user import User
+from app.core.dependencies import get_current_candidate
+from app.core.exceptions import NotFoundException, BadRequestException
 from app.models.candidate import Candidate
+from app.models.proctoring import ProctoringSession
 from app.models.recruiter_assessment import (
     AssessmentAssignment,
     CandidateAssessmentAttempt,
-    CandidateAssessmentResult,
 )
 from app.schemas.recruiter_assessment import (
     CandidateAssignmentListItem,
@@ -24,123 +25,272 @@ from app.schemas.recruiter_assessment import (
 )
 from app.services.assessment_assignment_service import AssessmentAssignmentService
 
-router = APIRouter(prefix="/candidate/first-round-assessments", tags=["Candidate First Round Assessment"])
+
+router = APIRouter(
+    prefix="/candidate/first-round-assessments",
+    tags=["Candidate First Round Assessment"],
+)
+
+
+def get_candidate_safe_status(status: str) -> str:
+    """Hide qualification status from candidates."""
+    if status in ("QUALIFIED", "NOT_QUALIFIED"):
+        return "COMPLETED"
+    return status
+
+
+def get_owned_assignment(
+    assignment_id: int,
+    candidate: Candidate,
+    db: Session,
+) -> AssessmentAssignment:
+    """Return an assignment only if it belongs to the logged-in candidate."""
+    assignment = (
+        db.query(AssessmentAssignment)
+        .filter(
+            AssessmentAssignment.id == assignment_id,
+            AssessmentAssignment.candidate_id == candidate.id,
+        )
+        .first()
+    )
+
+    if not assignment:
+        raise NotFoundException("Assessment Assignment")
+
+    return assignment
+
+
+def require_proctoring_consent(
+    assignment: AssessmentAssignment,
+    candidate: Candidate,
+    db: Session,
+) -> ProctoringSession:
+    """Require recorded consent and camera permission before assessment start."""
+    session = (
+        db.query(ProctoringSession)
+        .filter(
+            ProctoringSession.assignment_id == assignment.id,
+            ProctoringSession.candidate_id == candidate.id,
+        )
+        .first()
+    )
+
+    if not session:
+        raise BadRequestException(
+            "Please complete proctoring consent before starting the assessment."
+        )
+
+    if not session.consent_given:
+        raise BadRequestException(
+            "Proctoring consent is required before starting the assessment."
+        )
+
+    if not session.camera_permission_granted:
+        raise BadRequestException(
+            "Camera permission is required before starting the assessment."
+        )
+
+    return session
+
+
+def require_completed_recording(
+    assignment: AssessmentAssignment,
+    candidate: Candidate,
+    db: Session,
+) -> ProctoringSession:
+    """Require a successfully uploaded recording before assessment evaluation."""
+    session = (
+        db.query(ProctoringSession)
+        .filter(
+            ProctoringSession.assignment_id == assignment.id,
+            ProctoringSession.candidate_id == candidate.id,
+        )
+        .first()
+    )
+
+    if not session:
+        raise BadRequestException(
+            "Proctoring session not found. Assessment cannot be submitted."
+        )
+
+    if not session.consent_given or not session.camera_permission_granted:
+        raise BadRequestException(
+            "Valid proctoring consent and camera permission are required."
+        )
+
+    if (
+        session.session_status != "COMPLETED"
+        or not session.recording_path
+        or not session.recording_completed_at
+        or session.recording_deleted_at is not None
+    ):
+        raise BadRequestException(
+            "Your proctoring recording is not completed or uploaded yet. "
+            "Please complete the recording upload before submitting."
+        )
+
+    return session
+
+
+def get_assigned_question_ids(
+    assignment: AssessmentAssignment,
+) -> set:
+    """Build the set of question IDs assigned to this candidate."""
+    return {
+        str(question["id"])
+        for question in (assignment.assigned_questions or [])
+        if isinstance(question, dict) and question.get("id") is not None
+    }
+
+
+def validate_answer(
+    question_id: int,
+    selected_option: Optional[str],
+    valid_question_ids: set,
+) -> Optional[str]:
+    """Validate question ownership and the selected MCQ option."""
+    question_key = str(question_id)
+
+    if question_key not in valid_question_ids:
+        raise BadRequestException(
+            "Invalid question. This question is not part of your assessment."
+        )
+
+    if selected_option is None:
+        return None
+
+    normalized_option = selected_option.strip().upper()
+
+    if normalized_option not in {"A", "B", "C", "D"}:
+        raise BadRequestException(
+            "Invalid option. Please select A, B, C, or D."
+        )
+
+    return normalized_option
+
 
 @router.get("", response_model=List[CandidateAssignmentListItem])
 def list_candidate_first_round_assessments(
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """
-    Section 7: Candidate Assessment Dashboard.
-    List all First Round recruitment assessments assigned to this candidate.
-    """
-    assignments = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.candidate_id == candidate.id
-    ).order_by(desc(AssessmentAssignment.assigned_at)).all()
+    """List assessments assigned to the logged-in candidate."""
+    assignments = (
+        db.query(AssessmentAssignment)
+        .filter(AssessmentAssignment.candidate_id == candidate.id)
+        .order_by(desc(AssessmentAssignment.assigned_at))
+        .all()
+    )
 
     output = []
-    for a in assignments:
-        config = a.config_snapshot
-        attempt = a.attempt
-        result = a.result
+
+    for assignment in assignments:
+        config = assignment.config_snapshot or {}
+        attempt = assignment.attempt
 
         output.append({
-            "id": a.id,
-            "job_id": a.job_id,
-            "job_title": a.job.title if a.job else "Position",
-            "company_name": a.job.company.name if (a.job and a.job.company) else "Company",
-            "assessment_title": config.get("title", "First Round Assessment"),
+            "id": assignment.id,
+            "job_id": assignment.job_id,
+            "job_title": assignment.job.title if assignment.job else "Position",
+            "company_name": (
+                assignment.job.company.name
+                if assignment.job and assignment.job.company
+                else "Company"
+            ),
+            "assessment_title": config.get(
+                "title", "First Round Assessment"
+            ),
             "total_questions": config.get("total_questions", 0),
             "duration_minutes": config.get("duration_minutes", 30),
             "total_marks": config.get("total_marks", 0.0),
-            "passing_marks": config.get("passing_marks", 0.0),
-            "qualification_rule": config.get("qualification_rule", ">"),
             "negative_marking": config.get("negative_marking", False),
             "negative_marks": config.get("negative_marks", 0.0),
-            "status": a.status,
-            "assigned_at": a.assigned_at,
+            "status": get_candidate_safe_status(assignment.status),
+            "assigned_at": assignment.assigned_at,
             "started_at": attempt.started_at if attempt else None,
             "expires_at": attempt.expires_at if attempt else None,
             "is_submitted": attempt.is_submitted if attempt else False,
-            "is_qualified": result.is_qualified if result else None
         })
 
     return output
+
 
 @router.get("/{assignment_id}")
 def get_assessment_instructions(
     assignment_id: int,
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """View test metadata, rules, and instructions before starting."""
-    assignment = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.id == assignment_id,
-        AssessmentAssignment.candidate_id == candidate.id
-    ).first()
-    if not assignment:
-        raise NotFoundException("Assessment Assignment")
+    """Return assessment instructions without qualification criteria."""
+    assignment = get_owned_assignment(assignment_id, candidate, db)
 
-    config = assignment.config_snapshot
+    config = assignment.config_snapshot or {}
     attempt = assignment.attempt
 
     return {
         "assignment_id": assignment.id,
         "job_title": assignment.job.title if assignment.job else "",
-        "company_name": assignment.job.company.name if (assignment.job and assignment.job.company) else "",
+        "company_name": (
+            assignment.job.company.name
+            if assignment.job and assignment.job.company
+            else ""
+        ),
         "title": config.get("title"),
         "instructions": config.get("instructions"),
         "total_questions": config.get("total_questions"),
         "duration_minutes": config.get("duration_minutes"),
         "total_marks": config.get("total_marks"),
-        "passing_marks": config.get("passing_marks"),
-        "qualification_rule": config.get("qualification_rule"),
         "negative_marking": config.get("negative_marking"),
         "negative_marks": config.get("negative_marks"),
-        "status": assignment.status,
+        "status": get_candidate_safe_status(assignment.status),
         "is_started": bool(attempt),
         "is_submitted": attempt.is_submitted if attempt else False,
     }
 
-@router.post("/{assignment_id}/start", response_model=CandidateTestStartResponse)
+
+@router.post(
+    "/{assignment_id}/start",
+    response_model=CandidateTestStartResponse,
+)
 def start_or_resume_assessment(
     assignment_id: int,
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """
-    Start or resume time-bound assessment attempt.
-    - If already submitted: blocks retake.
-    - If active: restores state and calculates remaining time based on backend expiry.
-    - If expired: automatically submits and evaluates.
-    - Questions provided WITHOUT correct answers.
-    """
-    assignment = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.id == assignment_id,
-        AssessmentAssignment.candidate_id == candidate.id
-    ).first()
-    if not assignment:
-        raise NotFoundException("Assessment Assignment")
+    """Start or resume an assessment after verifying proctoring consent."""
+    assignment = get_owned_assignment(assignment_id, candidate, db)
 
-    config = assignment.config_snapshot
+    # Consent and camera permission are mandatory before an attempt starts.
+    require_proctoring_consent(assignment, candidate, db)
+
+    config = assignment.config_snapshot or {}
     duration_min = config.get("duration_minutes", 30)
     now = datetime.datetime.utcnow()
 
     attempt = assignment.attempt
 
     if attempt:
-        if attempt.is_submitted:
-            raise BadRequestException("You have already submitted this assessment. Retakes are not allowed.")
+        if attempt.candidate_id != candidate.id:
+            raise NotFoundException("Assessment Attempt")
 
-        # Check if time expired
+        if attempt.is_submitted:
+            raise BadRequestException(
+                "You have already submitted this assessment. Retakes are not allowed."
+            )
+
         if now >= attempt.expires_at:
-            # Auto-submit
-            AssessmentAssignmentService.evaluate_attempt(db, attempt)
-            raise BadRequestException("Assessment duration has expired. Your answers have been automatically submitted.")
+            raise BadRequestException(
+                "Assessment duration has expired. Please submit your assessment."
+            )
+
     else:
-        # Create new attempt
+        if assignment.status in ("SUBMITTED", "QUALIFIED", "NOT_QUALIFIED", "EXPIRED"):
+            raise BadRequestException(
+                "This assessment is no longer available. Retakes are not allowed."
+            )
+
         expires = now + datetime.timedelta(minutes=duration_min)
+
         attempt = CandidateAssessmentAttempt(
             assignment_id=assignment.id,
             candidate_id=candidate.id,
@@ -148,16 +298,19 @@ def start_or_resume_assessment(
             expires_at=expires,
             is_submitted=False,
             saved_answers={},
-            marked_for_review=[]
+            marked_for_review=[],
         )
+
         db.add(attempt)
         assignment.status = "IN_PROGRESS"
         db.commit()
         db.refresh(attempt)
 
-    remaining_sec = max(0, int((attempt.expires_at - now).total_seconds()))
+    remaining_sec = max(
+        0,
+        int((attempt.expires_at - now).total_seconds()),
+    )
 
-    # Build question items without exposing correct answers!
     question_items = [
         CandidateQuestionItem(
             id=q["id"],
@@ -168,9 +321,9 @@ def start_or_resume_assessment(
             option_b=q["option_b"],
             option_c=q["option_c"],
             option_d=q["option_d"],
-            marks=q["marks"]
+            marks=q["marks"],
         )
-        for q in assignment.assigned_questions
+        for q in (assignment.assigned_questions or [])
     ]
 
     return {
@@ -185,148 +338,158 @@ def start_or_resume_assessment(
         "negative_marks": config.get("negative_marks", 0.0),
         "questions": question_items,
         "saved_answers": attempt.saved_answers or {},
-        "marked_for_review": attempt.marked_for_review or []
+        "marked_for_review": attempt.marked_for_review or [],
     }
+
 
 @router.post("/{assignment_id}/save-answer")
 def save_candidate_answer(
     assignment_id: int,
     req: SaveAnswerRequest,
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Save an answer or toggle mark-for-review during active test."""
-    assignment = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.id == assignment_id,
-        AssessmentAssignment.candidate_id == candidate.id
-    ).first()
-    if not assignment or not assignment.attempt:
-        raise NotFoundException("Active Assessment Attempt")
+    """Save an answer or update its review status."""
+    assignment = get_owned_assignment(assignment_id, candidate, db)
 
     attempt = assignment.attempt
+
+    if not attempt or attempt.candidate_id != candidate.id:
+        raise NotFoundException("Active Assessment Attempt")
+
     if attempt.is_submitted:
         raise BadRequestException("Assessment is already submitted.")
 
     now = datetime.datetime.utcnow()
+
     if now >= attempt.expires_at:
-        AssessmentAssignmentService.evaluate_attempt(db, attempt)
-        raise BadRequestException("Assessment duration has expired. Answers submitted.")
+        raise BadRequestException(
+            "Assessment duration has expired. Please submit your assessment."
+        )
+
+    valid_question_ids = get_assigned_question_ids(assignment)
+
+    normalized_option = validate_answer(
+        req.question_id,
+        req.selected_option,
+        valid_question_ids,
+    )
 
     answers = dict(attempt.saved_answers or {})
-    if req.selected_option is not None:
-        answers[str(req.question_id)] = req.selected_option
+
+    if normalized_option is not None:
+        answers[str(req.question_id)] = normalized_option
+
     attempt.saved_answers = answers
 
     if req.is_marked_for_review is not None:
         reviews = list(attempt.marked_for_review or [])
+
         if req.is_marked_for_review and req.question_id not in reviews:
             reviews.append(req.question_id)
-        elif not req.is_marked_for_review and req.question_id in reviews:
+
+        elif (
+            not req.is_marked_for_review
+            and req.question_id in reviews
+        ):
             reviews.remove(req.question_id)
+
         attempt.marked_for_review = reviews
 
     db.commit()
+
     return {"message": "Answer saved successfully"}
 
-@router.post("/{assignment_id}/submit", response_model=CandidateAssessmentResultResponse)
+
+@router.post(
+    "/{assignment_id}/submit",
+    response_model=CandidateAssessmentResultResponse,
+)
 def submit_assessment(
     assignment_id: int,
     req: Optional[SubmitAssessmentRequest] = None,
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
-    Candidate final submission:
-    Evaluates assessment completely on the backend and immediately returns qualification scorecard.
+    Verify recording, evaluate the assessment internally,
+    and return only a neutral confirmation to the candidate.
     """
-    assignment = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.id == assignment_id,
-        AssessmentAssignment.candidate_id == candidate.id
-    ).first()
-    if not assignment or not assignment.attempt:
-        raise NotFoundException("Assessment Attempt")
+    assignment = get_owned_assignment(assignment_id, candidate, db)
 
     attempt = assignment.attempt
-    if attempt.is_submitted:
-        # Return existing result
-        result = assignment.result
-        if result:
-            return {
-                "assignment_id": assignment.id,
-                "job_title": assignment.job.title if assignment.job else "",
-                "assessment_title": assignment.config_snapshot.get("title", ""),
-                "obtained_marks": result.obtained_marks,
-                "total_marks": result.total_marks,
-                "percentage": result.percentage,
-                "correct_count": result.correct_count,
-                "incorrect_count": result.incorrect_count,
-                "unanswered_count": result.unanswered_count,
-                "passing_marks": result.passing_marks,
-                "qualification_rule": result.qualification_rule,
-                "is_qualified": result.is_qualified,
-                "qualification_message": result.qualification_message,
-                "submitted_at": attempt.submitted_at or datetime.datetime.utcnow(),
-                "time_taken_seconds": attempt.time_taken_seconds or 0
-            }
-        raise BadRequestException("Already submitted.")
 
-    if req and req.final_answers:
+    if not attempt or attempt.candidate_id != candidate.id:
+        raise NotFoundException("Assessment Attempt")
+
+    if attempt.is_submitted:
+        return {
+            "assignment_id": assignment.id,
+            "message": "Your assessment has already been submitted successfully.",
+            "submitted_at": attempt.submitted_at,
+        }
+
+    # Recording must be uploaded and completed before evaluation.
+    require_completed_recording(assignment, candidate, db)
+
+    valid_question_ids = get_assigned_question_ids(assignment)
+
+    # After the deadline, only answers saved before expiry may be evaluated.
+    # Do not accept new answers supplied in the final submit request.
+    submission_is_expired = datetime.datetime.utcnow() >= attempt.expires_at
+
+    if req and req.final_answers and not submission_is_expired:
         merged = dict(attempt.saved_answers or {})
-        merged.update(req.final_answers)
+
+        for question_id, selected_option in req.final_answers.items():
+            question_key = str(question_id)
+
+            if question_key not in valid_question_ids:
+                raise BadRequestException(
+                    "Submission contains a question that was not assigned to you."
+                )
+
+            normalized_option = validate_answer(
+                question_id,
+                selected_option,
+                valid_question_ids,
+            )
+
+            if normalized_option is not None:
+                merged[question_key] = normalized_option
+
         attempt.saved_answers = merged
 
-    # Backend Evaluation
-    result = AssessmentAssignmentService.evaluate_attempt(db, attempt)
+    # Evaluate and store the result internally.
+    # Candidate receives no marks or qualification details.
+    AssessmentAssignmentService.evaluate_attempt(db, attempt)
 
     return {
         "assignment_id": assignment.id,
-        "job_title": assignment.job.title if assignment.job else "",
-        "assessment_title": assignment.config_snapshot.get("title", ""),
-        "obtained_marks": result.obtained_marks,
-        "total_marks": result.total_marks,
-        "percentage": result.percentage,
-        "correct_count": result.correct_count,
-        "incorrect_count": result.incorrect_count,
-        "unanswered_count": result.unanswered_count,
-        "passing_marks": result.passing_marks,
-        "qualification_rule": result.qualification_rule,
-        "is_qualified": result.is_qualified,
-        "qualification_message": result.qualification_message,
+        "message": "Your assessment has been submitted successfully.",
         "submitted_at": attempt.submitted_at,
-        "time_taken_seconds": attempt.time_taken_seconds or 0
     }
 
-@router.get("/{assignment_id}/result", response_model=CandidateAssessmentResultResponse)
+
+@router.get(
+    "/{assignment_id}/result",
+    response_model=CandidateAssessmentResultResponse,
+)
 def get_candidate_result(
     assignment_id: int,
     candidate: Candidate = Depends(get_current_candidate),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Retrieve immediate candidate result scorecard."""
-    assignment = db.query(AssessmentAssignment).filter(
-        AssessmentAssignment.id == assignment_id,
-        AssessmentAssignment.candidate_id == candidate.id
-    ).first()
-    if not assignment or not assignment.result:
-        raise NotFoundException("Assessment Result")
+    """Return submission status only, never the candidate scorecard."""
+    assignment = get_owned_assignment(assignment_id, candidate, db)
 
-    result = assignment.result
     attempt = assignment.attempt
+
+    if not attempt or not attempt.is_submitted:
+        raise NotFoundException("Assessment Submission")
 
     return {
         "assignment_id": assignment.id,
-        "job_title": assignment.job.title if assignment.job else "",
-        "assessment_title": assignment.config_snapshot.get("title", ""),
-        "obtained_marks": result.obtained_marks,
-        "total_marks": result.total_marks,
-        "percentage": result.percentage,
-        "correct_count": result.correct_count,
-        "incorrect_count": result.incorrect_count,
-        "unanswered_count": result.unanswered_count,
-        "passing_marks": result.passing_marks,
-        "qualification_rule": result.qualification_rule,
-        "is_qualified": result.is_qualified,
-        "qualification_message": result.qualification_message,
-        "submitted_at": attempt.submitted_at if attempt else result.evaluated_at,
-        "time_taken_seconds": attempt.time_taken_seconds if attempt else 0
+        "message": "Your assessment has been submitted successfully.",
+        "submitted_at": attempt.submitted_at,
     }
