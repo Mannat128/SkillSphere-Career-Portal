@@ -23,3 +23,5 @@ httpx>=0.27.0
 # Computer Vision - YOLO object detection
 ultralytics>=8.3.0
 numpy>=1.26.4
+
+email-validator>=2.0.0
