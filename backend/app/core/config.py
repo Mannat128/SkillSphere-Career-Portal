@@ -1,6 +1,5 @@
-
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,13 +44,13 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str
 
     # AI configuration
-    AI_PROVIDER: str = "google_gemini"
+    AI_PROVIDER: Literal["google_gemini"] = "google_gemini"
     AI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
-    OPENAI_API_KEY: Optional[str] = None
 
-    GEMINI_MODEL: str = "gemini-2.0-flash"
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    # Default to a model verified in the current Gemini model list. Operators
+    # can still pin a model through GEMINI_MODEL.
+    GEMINI_MODEL: str = "gemini-3.8-flash"
 
     # Upload configuration
     UPLOAD_DIR: str = os.path.join(BASE_DIR, "uploads")
@@ -63,7 +62,7 @@ class Settings(BaseSettings):
     )
 
     # Email configuration
-    EMAIL_MODE: str = "development"
+    EMAIL_MODE: str = "development"  # "development" logs, "production" sends via SMTP
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587
     SMTP_USER: Optional[str] = None
@@ -71,6 +70,27 @@ class Settings(BaseSettings):
 
     EMAILS_FROM_EMAIL: str = "no-reply@skillsphere.local"
     EMAILS_FROM_NAME: str = "SkillSphere Notifications"
+
+    # Front‑end base URL used to build verification and password‑reset links
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+
+    # Assessment recording storage (Cloudinary by default; local remains available)
+    STORAGE_BACKEND: str = "cloudinary"
+    CLOUDINARY_CLOUD_NAME: Optional[str] = None
+    CLOUDINARY_API_KEY: Optional[str] = None
+    CLOUDINARY_API_SECRET: Optional[str] = None
+
+    # Legacy S3 settings remain available for existing s3:// recording references.
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_REGION: str = "us-east-1"
+    AWS_S3_BUCKET_NAME: Optional[str] = None
+    AWS_S3_ENDPOINT_URL: Optional[str] = None
+
+    # Recording lifecycle. Cleanup is opt-in so no existing recording is removed
+    # until the operator reviews the data inventory and explicitly enables it.
+    RECORDING_RETENTION_DAYS: int = 15
+    ENABLE_RECORDING_CLEANUP: bool = False
 
     @property
     def DATABASE_URL(self) -> str:

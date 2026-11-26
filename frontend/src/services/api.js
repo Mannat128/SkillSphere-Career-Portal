@@ -21,11 +21,16 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      // Clear token and redirect to login if session expired
-      localStorage.removeItem('skillsphere_token');
-      localStorage.removeItem('skillsphere_user');
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
-        window.location.href = '/login';
+      // Only clear session and redirect if the backend indicates the token is invalid/expired
+      const tokenInvalid = error.response.headers &&
+        (error.response.headers['x-token-invalid'] === 'true' ||
+         error.response.headers['X-Token-Invalid'] === 'true');
+      if (tokenInvalid) {
+        localStorage.removeItem('skillsphere_token');
+        localStorage.removeItem('skillsphere_user');
+        if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+          window.location.href = '/login';
+        }
       }
     }
     return Promise.reject(error);

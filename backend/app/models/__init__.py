@@ -65,6 +65,10 @@ from app.models.recruiter_assessment import (
     CandidateAssessmentResult,
 )
 from app.models.proctoring import ProctoringSession
+from app.models.sphera import (
+    SpheraConversation, SpheraMessage, AssistantFeedback,
+    AssistantUnansweredQuestion, AssistantKnowledgeSuggestion,
+)
 
 # Support Ticket Models
 from app.models.support_ticket import (
@@ -123,6 +127,11 @@ __all__ = [
     "CandidateAssessmentAttempt",
     "CandidateAssessmentResult",
     "ProctoringSession",
+    "SpheraConversation",
+    "SpheraMessage",
+    "AssistantFeedback",
+    "AssistantUnansweredQuestion",
+    "AssistantKnowledgeSuggestion",
     "SupportTicket",
     "TicketMessage",
     "TicketAttachment",

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Upload, FileText, Download, Trash2, CheckCircle, Clock, AlertCircle, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
+import ResumeReviewModal from './ResumeReviewModal';
 
 const statusMeta = {
   PENDING: { label: 'Pending', icon: Clock, className: 'badge-warning' },
@@ -16,6 +17,7 @@ export default function ResumeManagement() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [pageError, setPageError] = useState('');
   const [busyId, setBusyId] = useState(null);
+  const [reviewingResume, setReviewingResume] = useState(null);
 
   useEffect(() => { fetchResumes(); }, []);
 
@@ -35,6 +37,7 @@ export default function ResumeManagement() {
             ...resume,
             ocr_status: statusResponse.data?.status || resume.ocr_status,
             extracted_data: dataResponse.data?.extracted_data || null,
+            confidence_scores: dataResponse.data?.confidence_scores || {},
           };
         } catch {
           return { ...resume, extracted_data: null };
@@ -72,14 +75,16 @@ export default function ResumeManagement() {
     }
   };
 
-  const handleConfirmToProfile = async (resumeId) => {
+  const handleConfirmToProfile = async (resumeId, extractedData) => {
     setBusyId(resumeId);
     setPageError('');
     try {
+      await api.put(`/resumes/${resumeId}/extracted-data`, { extracted_data: extractedData });
       await api.post(`/resumes/${resumeId}/confirm-to-profile`, { apply_to_profile: true });
+      setReviewingResume(null);
       await fetchResumes();
     } catch (error) {
-      setPageError(error.response?.data?.detail || 'Could not sync extracted data. Confirm that OCR processing is complete.');
+      throw error;
     } finally {
       setBusyId(null);
     }
@@ -130,9 +135,9 @@ export default function ResumeManagement() {
         <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: 14 }}>Upload New Resume</h3>
         <form onSubmit={handleFileUpload}>
           <div style={{ border: '2px dashed var(--border-color)', borderRadius: 12, padding: 24, textAlign: 'center', background: 'var(--bg-surface, transparent)', marginBottom: 16 }}>
-            <input type="file" id="resume-file-input" accept=".pdf,.png,.jpg,.jpeg" onChange={(event) => setSelectedFile(event.target.files?.[0] || null)} />
-            <p style={{ fontWeight: 600, marginTop: 10 }}>{selectedFile ? selectedFile.name : 'Choose a PDF or image resume (maximum 10MB)'}</p>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>Digital PDFs and scanned documents are supported.</p>
+            <input type="file" id="resume-file-input" accept=".pdf,.docx,.png,.jpg,.jpeg" onChange={(event) => setSelectedFile(event.target.files?.[0] || null)} />
+            <p style={{ fontWeight: 600, marginTop: 10 }}>{selectedFile ? selectedFile.name : 'Choose a PDF, DOCX, or image resume (maximum 10MB)'}</p>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>Digital and scanned PDFs, DOCX files, and images are supported.</p>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button type="submit" disabled={!selectedFile || uploading} className="btn btn-primary">{uploading ? 'Uploading…' : 'Upload & Parse Resume'}</button>
@@ -156,7 +161,7 @@ export default function ResumeManagement() {
                 <td><span className={`badge ${status.className}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><StatusIcon size={12} />{status.label}</span></td>
                 <td><div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 260 }}>{skills.length ? skills.slice(0, 4).map((skill, index) => <span key={`${skill}-${index}`} className="badge badge-blue">{skill}</span>) : <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>{processing ? 'Processing…' : 'No skills extracted'}</span>}{skills.length > 4 && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>+{skills.length - 4} more</span>}</div></td>
                 <td style={{ textAlign: 'right' }}><div style={{ display: 'inline-flex', gap: 6 }}>
-                  <button onClick={() => handleConfirmToProfile(resume.id)} disabled={processing || resume.ocr_status === 'FAILED' || busyId === resume.id || !resume.extracted_data} className="btn btn-outline" style={{ fontSize: '0.78rem', padding: '5px 8px' }}>Sync Profile</button>
+                  <button onClick={() => setReviewingResume(resume)} disabled={processing || resume.ocr_status === 'FAILED' || busyId === resume.id || !resume.extracted_data} className="btn btn-outline" style={{ fontSize: '0.78rem', padding: '5px 8px' }}>Review & Autofill</button>
                   <button onClick={() => handleDownload(resume)} disabled={busyId === resume.id} title="Download resume" style={{ padding: 6 }}><Download size={16} /></button>
                   <button onClick={() => handleDeleteResume(resume.id)} disabled={busyId === resume.id} title="Delete resume" style={{ color: 'var(--danger)', padding: 6 }}><Trash2 size={16} /></button>
                 </div></td>
@@ -165,6 +170,14 @@ export default function ResumeManagement() {
           </tbody></table></div>
         )}
       </div>
+      {reviewingResume && <ResumeReviewModal
+        resume={reviewingResume}
+        extractedData={reviewingResume.extracted_data}
+        confidenceScores={reviewingResume.confidence_scores}
+        onClose={() => setReviewingResume(null)}
+        onConfirm={(data) => handleConfirmToProfile(reviewingResume.id, data)}
+        busy={busyId === reviewingResume.id}
+      />}
     </div>
   );
 }

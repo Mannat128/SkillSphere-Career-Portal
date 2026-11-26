@@ -12,7 +12,6 @@ import {
   CheckCircle2,
   XCircle,
   RefreshCw,
-  Camera,
   Clock
 } from 'lucide-react';
 
@@ -29,7 +28,6 @@ const tabs = [
   ['/admin/recruiters', 'Recruiter Verification', ShieldCheck],
   ['/admin/jobs', 'Job Moderation', BriefcaseBusiness],
   ['/admin/pending-approvals', 'Pending Approvals', CheckCircle2],
-  ['/admin/proctoring', 'Proctoring', Camera],
   ['/admin/audit-logs', 'Audit Logs', FileText]
 ];
 

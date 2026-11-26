@@ -3,6 +3,7 @@ import asyncio
 import logging
 
 from app.services.proctoring_cleanup import cleanup_expired_recordings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,10 @@ async def run_proctoring_cleanup_scheduler():
     Run expired-recording cleanup once at startup,
     then repeat every 24 hours.
     """
+
+    if not settings.ENABLE_RECORDING_CLEANUP:
+        logger.info("Scheduled recording cleanup is disabled by configuration.")
+        return
 
     while True:
         try:

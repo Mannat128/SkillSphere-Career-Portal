@@ -91,6 +91,8 @@ class JobAssessmentConfigCreate(BaseModel):
     difficulty_distribution: Optional[Dict[str, int]] = None
     selection_mode: str = Field("RANDOM", pattern="^(RANDOM|SPECIFIC)$")
     selected_question_ids: Optional[List[int]] = None
+    available_from: Optional[datetime.datetime] = None
+    available_until: Optional[datetime.datetime] = None
 
 
 class JobAssessmentConfigResponse(BaseModel):
@@ -111,6 +113,8 @@ class JobAssessmentConfigResponse(BaseModel):
     selection_mode: str
     selected_question_ids: Optional[List[int]] = None
     eligible_questions_count: Optional[int] = 0
+    available_from: Optional[datetime.datetime] = None
+    available_until: Optional[datetime.datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -95,6 +95,8 @@ class JobAssessment(Base):
     difficulty_distribution = Column(JSON, nullable=True)
     selection_mode = Column(String(50), default="RANDOM", nullable=False)
     selected_question_ids = Column(JSON, nullable=True)
+    available_from = Column(DateTime, nullable=True)
+    available_until = Column(DateTime, nullable=True)
     created_at = Column(
         DateTime,
         default=datetime.datetime.utcnow,

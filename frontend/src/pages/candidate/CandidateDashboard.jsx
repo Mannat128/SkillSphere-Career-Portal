@@ -22,7 +22,7 @@ export default function CandidateDashboard() {
     let active = true;
     Promise.allSettled([
       api.get('/candidate/profile'), api.get('/candidate/profile/completion'), api.get('/applications'),
-      api.get('/jobs/saved'), api.get('/candidate/first-round-assessments'), api.get('/jobs', { params: { page: 1, page_size: 5 } })
+      api.get('/jobs/saved'), api.get('/candidate/first-round-assessments'), api.get('/jobs/recommended', { params: { limit: 5 } })
     ]).then(results => {
       if (!active) return;
       const setters = [setProfile, setCompletion, setApplications, setSavedJobs, setAssessments, setJobs];
@@ -71,7 +71,7 @@ export default function CandidateDashboard() {
     </div>
     <div className="ss-two-col">
       <section className={card}><div className="ss-card-head"><h2>Recommended Jobs</h2><Link to="/candidate/jobs">View all <ArrowUpRight size={14}/></Link></div>
-        {jobs.length ? <div className="ss-job-list">{jobs.slice(0,5).map(job=><div className="ss-job-row" key={job.id}><div className="ss-company-mark">{(job.company?.name || job.company_name || 'C').slice(0,1).toUpperCase()}</div><div className="ss-job-info"><b>{job.title}</b><small>{job.company?.name || job.company_name || 'Company'} · {job.location || 'Location not specified'}</small></div><Link className="ss-small-btn" to={`/candidate/jobs`}>Explore</Link></div>)}</div> : <div className="ss-empty">No recommended jobs available right now.</div>}
+        {jobs.length ? <div className="ss-job-list">{jobs.slice(0,5).map(job=><div className="ss-job-row" key={job.id}><div className="ss-company-mark">{(job.company?.name || job.company_name || 'C').slice(0,1).toUpperCase()}</div><div className="ss-job-info"><b>{job.title}</b><small>{job.company?.name || job.company_name || 'Company'} · {job.location || 'Location not specified'}</small>{job.match_score !== undefined && <div style={{ marginTop: 4, display: 'flex', gap: 6, alignItems: 'center' }}><span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 7px', borderRadius: '6px', background: job.match_score >= 80 ? '#E4F98C' : job.match_score >= 50 ? '#FEF08A' : '#E2E8F0', color: job.match_score >= 80 ? '#2E4C00' : job.match_score >= 50 ? '#713F12' : '#334155' }}>{job.match_score}% Match</span>{job.matched_skills?.length > 0 && <span style={{ fontSize: '10px', color: '#64748B' }}>Matched: {job.matched_skills.slice(0, 2).join(', ')}</span>}</div>}</div><Link className="ss-small-btn" to={`/candidate/jobs`}>Explore</Link></div>)}</div> : <div className="ss-empty">No recommended jobs available right now.</div>}
       </section>
       <section className={card}><div className="ss-card-head"><h2>Application Status</h2><Link to="/candidate/applications">Details <ArrowUpRight size={14}/></Link></div><div className="ss-status-content"><div className="ss-donut" style={{background:total ? `conic-gradient(${gradient})` : '#E9E9E3'}}><div><b>{total}</b><small>Applications</small></div></div><div className="ss-legend">{statusSegments.map(s=><div key={s.label}><i style={{background:s.color}}/><span>{s.label}</span><b>{s.value}</b></div>)}</div></div></section>
     </div>

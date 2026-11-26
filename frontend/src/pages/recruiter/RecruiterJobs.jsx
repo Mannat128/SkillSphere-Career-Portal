@@ -32,6 +32,10 @@ export default function RecruiterJobs() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [assessmentJob, setAssessmentJob] = useState(null);
+  const [assessmentSaving, setAssessmentSaving] = useState(false);
+  const [assessmentError, setAssessmentError] = useState('');
+  const [assessmentForm, setAssessmentForm] = useState(null);
 
   const fetchJobs = async () => {
     try {
@@ -84,6 +88,70 @@ export default function RecruiterJobs() {
     setError('');
     setMessage('');
     setShowForm(true);
+  };
+
+  const openAssessment = async (job) => {
+    setAssessmentError('');
+    setAssessmentJob(job);
+    try {
+      const { data } = await api.get(`/jobs/${job.id}/assessment`);
+      const value = data || {};
+      const localDateTime = (iso) => {
+        if (!iso) return '';
+        const date = new Date(iso);
+        const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+        return local.toISOString().slice(0, 16);
+      };
+      setAssessmentForm({
+        is_enabled: value.is_enabled ?? true,
+        title: value.title || 'First Round Technical MCQ Assessment',
+        instructions: value.instructions || '',
+        total_questions: value.total_questions ?? 10,
+        duration_minutes: value.duration_minutes ?? 30,
+        total_marks: value.total_marks ?? 10,
+        passing_marks: value.passing_marks ?? 6,
+        categories: (value.categories || []).join(', '),
+        available_from: localDateTime(value.available_from),
+        available_until: localDateTime(value.available_until),
+        eligible_questions_count: value.eligible_questions_count ?? 0,
+      });
+    } catch (err) {
+      setAssessmentError(err.response?.data?.detail || 'Unable to load this job assessment.');
+      setAssessmentForm(null);
+    }
+  };
+
+  const saveAssessment = async (event) => {
+    event.preventDefault();
+    setAssessmentSaving(true);
+    setAssessmentError('');
+    try {
+      const payload = {
+        is_enabled: assessmentForm.is_enabled,
+        title: assessmentForm.title,
+        instructions: assessmentForm.instructions || null,
+        total_questions: Number(assessmentForm.total_questions),
+        duration_minutes: Number(assessmentForm.duration_minutes),
+        total_marks: Number(assessmentForm.total_marks),
+        passing_marks: Number(assessmentForm.passing_marks),
+        qualification_rule: '>',
+        negative_marking: false,
+        negative_marks: 0,
+        categories: assessmentForm.categories.split(',').map(v => v.trim()).filter(Boolean),
+        selection_mode: 'RANDOM',
+        selected_question_ids: null,
+        available_from: assessmentForm.available_from ? new Date(assessmentForm.available_from).toISOString() : null,
+        available_until: assessmentForm.available_until ? new Date(assessmentForm.available_until).toISOString() : null,
+      };
+      await api.post(`/jobs/${assessmentJob.id}/assessment`, payload);
+      setAssessmentJob(null);
+      setAssessmentForm(null);
+      setMessage('Assessment configuration saved. Questions will be randomly selected from your eligible Question Bank.');
+    } catch (err) {
+      setAssessmentError(err.response?.data?.detail || 'Unable to save assessment configuration.');
+    } finally {
+      setAssessmentSaving(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -275,6 +343,11 @@ export default function RecruiterJobs() {
                       <div className="ss-action-group">
                         <button
                           className="ss-small-btn"
+                          onClick={() => openAssessment(job)}
+                          title="Configure assessment"
+                        >Assessment</button>
+                        <button
+                          className="ss-small-btn"
                           onClick={() => openEditForm(job)}
                           title="Edit job"
                         >
@@ -436,6 +509,31 @@ export default function RecruiterJobs() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {assessmentJob && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,.55)', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 16 }}>
+          <form className="ss-card" onSubmit={saveAssessment} style={{ width: '100%', maxWidth: 650, maxHeight: '90vh', overflowY: 'auto' }}>
+            <div className="ss-card-head"><div><h2>Assessment · {assessmentJob.title}</h2><small>Questions are drawn randomly from your eligible Question Bank.</small></div><button type="button" onClick={() => setAssessmentJob(null)}><X size={20}/></button></div>
+            {assessmentError && <div className="ss-notice">{assessmentError}</div>}
+            {!assessmentForm ? <p>Loading assessment configuration…</p> : <>
+              <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assessmentForm.is_enabled} onChange={e => setAssessmentForm({ ...assessmentForm, is_enabled: e.target.checked })}/> Enable for this job</label>
+              <div className="ss-form-grid">
+                <label>Assessment title<input required minLength={3} value={assessmentForm.title} onChange={e => setAssessmentForm({ ...assessmentForm, title: e.target.value })}/></label>
+                <label>Question count<input type="number" min="1" max="100" required value={assessmentForm.total_questions} onChange={e => setAssessmentForm({ ...assessmentForm, total_questions: e.target.value })}/></label>
+                <label>Duration (minutes)<input type="number" min="1" max="300" required value={assessmentForm.duration_minutes} onChange={e => setAssessmentForm({ ...assessmentForm, duration_minutes: e.target.value })}/></label>
+                <label>Total marks<input type="number" min="0.1" step="0.1" required value={assessmentForm.total_marks} onChange={e => setAssessmentForm({ ...assessmentForm, total_marks: e.target.value })}/></label>
+                <label>Passing marks (must score strictly higher)<input type="number" min="0" step="0.1" required value={assessmentForm.passing_marks} onChange={e => setAssessmentForm({ ...assessmentForm, passing_marks: e.target.value })}/></label>
+                <label>Question categories, comma separated<input placeholder="e.g. React, SQL" value={assessmentForm.categories} onChange={e => setAssessmentForm({ ...assessmentForm, categories: e.target.value })}/></label>
+                <label>Available from<input type="datetime-local" value={assessmentForm.available_from} onChange={e => setAssessmentForm({ ...assessmentForm, available_from: e.target.value })}/></label>
+                <label>Available until<input type="datetime-local" value={assessmentForm.available_until} onChange={e => setAssessmentForm({ ...assessmentForm, available_until: e.target.value })}/></label>
+              </div>
+              <label style={{ display: 'block', margin: '12px 0' }}>Candidate instructions<textarea rows="3" value={assessmentForm.instructions} onChange={e => setAssessmentForm({ ...assessmentForm, instructions: e.target.value })}/></label>
+              <p>Eligible questions in your bank: {assessmentForm.eligible_questions_count}. Save requires enough questions for the selected count.</p>
+              <button className="ss-primary-btn" disabled={assessmentSaving}>{assessmentSaving ? 'Saving…' : 'Save assessment'}</button>
+            </>}
+          </form>
         </div>
       )}
 

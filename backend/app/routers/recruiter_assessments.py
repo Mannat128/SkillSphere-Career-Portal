@@ -1,3 +1,4 @@
+import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -26,6 +27,23 @@ from app.services.assessment_assignment_service import AssessmentAssignmentServi
 
 
 router = APIRouter(tags=["Recruiter First Round Assessment"])
+
+
+def _availability_utc_naive(value: Optional[datetime.datetime]):
+    """Normalize offsets to UTC before storing in timezone-naive DB columns.
+
+    Legacy/API datetimes without an offset are treated as UTC, matching the
+    existing candidate-start comparison contract.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+
+
+def _availability_utc_aware(value: Optional[datetime.datetime]):
+    """Serialize stored UTC-naive values as explicit UTC for API clients."""
+    normalized = _availability_utc_naive(value)
+    return normalized.replace(tzinfo=datetime.timezone.utc) if normalized else None
 
 
 @router.get(
@@ -84,6 +102,8 @@ def get_job_assessment_config(
         "selection_mode": config.selection_mode,
         "selected_question_ids": config.selected_question_ids,
         "eligible_questions_count": len(pool),
+        "available_from": _availability_utc_aware(config.available_from),
+        "available_until": _availability_utc_aware(config.available_until),
     }
 
 
@@ -109,7 +129,12 @@ def save_job_assessment_config(
     if not job:
         raise NotFoundException("Job")
 
+    available_from = _availability_utc_naive(req.available_from)
+    available_until = _availability_utc_naive(req.available_until)
+
     if req.is_enabled:
+        if available_from and available_until and available_until <= available_from:
+            raise BadRequestException("Assessment availability end must be after its start.")
         if req.passing_marks > req.total_marks:
             raise BadRequestException(
                 f"Passing marks ({req.passing_marks}) cannot exceed "
@@ -181,6 +206,8 @@ def save_job_assessment_config(
     config.difficulty_distribution = req.difficulty_distribution
     config.selection_mode = req.selection_mode
     config.selected_question_ids = req.selected_question_ids
+    config.available_from = available_from
+    config.available_until = available_until
 
     db.commit()
     db.refresh(config)
@@ -210,6 +237,8 @@ def save_job_assessment_config(
         "selection_mode": config.selection_mode,
         "selected_question_ids": config.selected_question_ids,
         "eligible_questions_count": len(pool),
+        "available_from": _availability_utc_aware(config.available_from),
+        "available_until": _availability_utc_aware(config.available_until),
     }
 
 

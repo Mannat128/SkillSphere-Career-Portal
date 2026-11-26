@@ -1,506 +1,193 @@
-
-from typing import List, Optional
-
-from fastapi import APIRouter, Depends, Query
+from typing import List
+import datetime
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
 
 from app.database.session import get_db
-from app.core.dependencies import get_current_recruiter
-from app.core.exceptions import (
-    NotFoundException,
-    BadRequestException,
+from app.core.dependencies import get_current_candidate
+from app.core.exceptions import NotFoundException, BadRequestException
+from app.models.candidate import Candidate
+from app.models.assessment import (
+    TechnicalAssessment,
+    AssessmentQuestion,
+    AssessmentAttempt,
+    AssessmentResult,
 )
-from app.models.recruiter import Recruiter
-from app.models.job import Job
-from app.models.proctoring import ProctoringSession
-from app.models.recruiter_assessment import (
-    JobAssessment,
-    CandidateAssessmentResult,
+from app.schemas.assessment import (
+    AssessmentListItem,
+    AssessmentAttemptStart,
+    AssessmentQuestionItem,
+    AssessmentSubmissionRequest,
+    AssessmentAttemptResultResponse,
+    AssessmentQuestionResultItem,
 )
-from app.schemas.recruiter_assessment import (
-    JobAssessmentConfigCreate,
-    JobAssessmentConfigResponse,
-    RecruiterAssessmentResultItem,
-)
-from app.services.assessment_assignment_service import AssessmentAssignmentService
 
+router = APIRouter(prefix="/assessments", tags=["Technical Assessments"])
 
-router = APIRouter(tags=["Recruiter First Round Assessment"])
-
-
-# ---------------------------------------------------------
-# GET JOB ASSESSMENT CONFIGURATION
-# ---------------------------------------------------------
-
-@router.get(
-    "/jobs/{job_id}/assessment",
-    response_model=Optional[JobAssessmentConfigResponse],
-)
-def get_job_assessment_config(
-    job_id: int,
-    recruiter: Recruiter = Depends(get_current_recruiter),
+@router.get("", response_model=List[AssessmentListItem])
+def list_assessments(
+    candidate: Candidate = Depends(get_current_candidate),
     db: Session = Depends(get_db),
 ):
-    job = (
-        db.query(Job)
-        .filter(
-            Job.id == job_id,
-            Job.recruiter_id == recruiter.id,
-        )
-        .first()
-    )
+    """List technology assessments for authenticated candidates only."""
+    assessments = db.query(TechnicalAssessment).filter(TechnicalAssessment.is_active == True).all()
+    return assessments
 
-    if not job:
-        raise NotFoundException("Job")
-
-    config = (
-        db.query(JobAssessment)
-        .filter(JobAssessment.job_id == job_id)
-        .first()
-    )
-
-    if not config:
-        return None
-
-    pool = AssessmentAssignmentService.get_eligible_questions(
-        db,
-        recruiter_id=recruiter.id,
-        categories=config.categories,
-        job_id=job_id,
-    )
-
-    return {
-        "id": config.id,
-        "job_id": config.job_id,
-        "is_enabled": config.is_enabled,
-        "title": config.title,
-        "instructions": config.instructions,
-        "total_questions": config.total_questions,
-        "duration_minutes": config.duration_minutes,
-        "total_marks": config.total_marks,
-        "passing_marks": config.passing_marks,
-        "qualification_rule": ">",
-        "negative_marking": config.negative_marking,
-        "negative_marks": config.negative_marks,
-        "categories": config.categories or [],
-        "difficulty_distribution": config.difficulty_distribution,
-        "selection_mode": config.selection_mode,
-        "selected_question_ids": config.selected_question_ids,
-        "eligible_questions_count": len(pool),
-    }
-
-
-# ---------------------------------------------------------
-# CREATE / UPDATE JOB ASSESSMENT CONFIGURATION
-# ---------------------------------------------------------
-
-@router.post(
-    "/jobs/{job_id}/assessment",
-    response_model=JobAssessmentConfigResponse,
-)
-def save_job_assessment_config(
-    job_id: int,
-    req: JobAssessmentConfigCreate,
-    recruiter: Recruiter = Depends(get_current_recruiter),
+@router.get("/{assessment_id}", response_model=AssessmentListItem)
+def get_assessment(
+    assessment_id: int,
+    candidate: Candidate = Depends(get_current_candidate),
     db: Session = Depends(get_db),
 ):
-    job = (
-        db.query(Job)
-        .filter(
-            Job.id == job_id,
-            Job.recruiter_id == recruiter.id,
-        )
-        .first()
+    """Get assessment details for authenticated candidates only."""
+    assessment = db.query(TechnicalAssessment).filter(TechnicalAssessment.id == assessment_id).first()
+    if not assessment:
+        raise NotFoundException("Assessment")
+    return assessment
+
+@router.post("/{assessment_id}/start", response_model=AssessmentAttemptStart)
+def start_assessment_attempt(
+    assessment_id: int,
+    candidate: Candidate = Depends(get_current_candidate),
+    db: Session = Depends(get_db)
+):
+    """
+    Start a timed assessment attempt.
+    Returns test questions without exposing correct options.
+    """
+    assessment = db.query(TechnicalAssessment).filter(TechnicalAssessment.id == assessment_id).first()
+    if not assessment:
+        raise NotFoundException("Assessment")
+
+    attempt = AssessmentAttempt(
+        assessment_id=assessment.id,
+        candidate_id=candidate.id,
+        started_at=datetime.datetime.utcnow(),
+        score=0.0,
+        total_score=100.0,
+        passed=False
     )
-
-    if not job:
-        raise NotFoundException("Job")
-
-    if req.is_enabled:
-        if req.passing_marks > req.total_marks:
-            raise BadRequestException(
-                f"Passing marks ({req.passing_marks}) cannot exceed "
-                f"total marks ({req.total_marks})."
-            )
-
-        # Qualification rule is fixed to strict greater-than.
-        if req.qualification_rule != ">":
-            raise BadRequestException(
-                "Qualification rule is fixed: obtained marks must be "
-                "strictly greater than passing marks."
-            )
-
-        if req.selection_mode == "SPECIFIC":
-            if (
-                not req.selected_question_ids
-                or len(req.selected_question_ids) < req.total_questions
-            ):
-                raise BadRequestException(
-                    f"Please select at least {req.total_questions} "
-                    "questions from the Question Bank."
-                )
-        else:
-            pool = AssessmentAssignmentService.get_eligible_questions(
-                db,
-                recruiter_id=recruiter.id,
-                categories=req.categories,
-                job_id=job_id,
-            )
-
-            if len(pool) < req.total_questions:
-                raise BadRequestException(
-                    f"Insufficient questions in Question Bank. "
-                    f"You configured {req.total_questions} questions, "
-                    f"but only {len(pool)} are available."
-                )
-
-            if req.difficulty_distribution:
-                sum_dist = sum(req.difficulty_distribution.values())
-
-                if sum_dist != req.total_questions:
-                    raise BadRequestException(
-                        f"Difficulty distribution total ({sum_dist}) "
-                        f"does not match configured question count "
-                        f"({req.total_questions})."
-                    )
-
-    config = (
-        db.query(JobAssessment)
-        .filter(JobAssessment.job_id == job_id)
-        .first()
-    )
-
-    if not config:
-        config = JobAssessment(job_id=job_id)
-        db.add(config)
-
-    config.is_enabled = req.is_enabled
-    config.title = req.title
-    config.instructions = req.instructions
-    config.total_questions = req.total_questions
-    config.duration_minutes = req.duration_minutes
-    config.total_marks = req.total_marks
-    config.passing_marks = req.passing_marks
-
-    # Never save >=. Always persist strict greater-than.
-    config.qualification_rule = ">"
-
-    config.negative_marking = req.negative_marking
-    config.negative_marks = req.negative_marks
-    config.categories = req.categories
-    config.difficulty_distribution = req.difficulty_distribution
-    config.selection_mode = req.selection_mode
-    config.selected_question_ids = req.selected_question_ids
-
+    db.add(attempt)
     db.commit()
-    db.refresh(config)
+    db.refresh(attempt)
 
-    pool = AssessmentAssignmentService.get_eligible_questions(
-        db,
-        recruiter_id=recruiter.id,
-        categories=config.categories,
-        job_id=job_id,
-    )
-
-    return {
-        "id": config.id,
-        "job_id": config.job_id,
-        "is_enabled": config.is_enabled,
-        "title": config.title,
-        "instructions": config.instructions,
-        "total_questions": config.total_questions,
-        "duration_minutes": config.duration_minutes,
-        "total_marks": config.total_marks,
-        "passing_marks": config.passing_marks,
-        "qualification_rule": ">",
-        "negative_marking": config.negative_marking,
-        "negative_marks": config.negative_marks,
-        "categories": config.categories or [],
-        "difficulty_distribution": config.difficulty_distribution,
-        "selection_mode": config.selection_mode,
-        "selected_question_ids": config.selected_question_ids,
-        "eligible_questions_count": len(pool),
-    }
-
-
-# ---------------------------------------------------------
-# PREVIEW JOB ASSESSMENT
-# ---------------------------------------------------------
-
-@router.get("/jobs/{job_id}/assessment/preview")
-def preview_job_assessment(
-    job_id: int,
-    recruiter: Recruiter = Depends(get_current_recruiter),
-    db: Session = Depends(get_db),
-):
-    job = (
-        db.query(Job)
-        .filter(
-            Job.id == job_id,
-            Job.recruiter_id == recruiter.id,
+    question_items = [
+        AssessmentQuestionItem(
+            id=q.id,
+            question_text=q.question_text,
+            option_a=q.option_a,
+            option_b=q.option_b,
+            option_c=q.option_c,
+            option_d=q.option_d
         )
-        .first()
-    )
-
-    if not job or not job.assessment_config:
-        raise NotFoundException("Assessment Configuration")
-
-    config = job.assessment_config
-
-    pool = AssessmentAssignmentService.get_eligible_questions(
-        db,
-        recruiter_id=recruiter.id,
-        categories=config.categories,
-        job_id=job_id,
-    )
-
-    sample_questions = pool[:config.total_questions] if pool else []
-
-    return {
-        "title": config.title,
-        "is_enabled": config.is_enabled,
-        "total_questions": config.total_questions,
-        "duration_minutes": config.duration_minutes,
-        "total_marks": config.total_marks,
-        "passing_marks": config.passing_marks,
-        "qualification_rule": ">",
-        "negative_marking": config.negative_marking,
-        "negative_marks": config.negative_marks,
-        "categories": config.categories or [],
-        "eligible_count": len(pool),
-        "sample_questions": [
-            {
-                "id": q.id,
-                "question_text": q.question_text,
-                "category": q.category,
-                "difficulty": q.difficulty,
-                "marks": q.marks,
-                "option_a": q.option_a,
-                "option_b": q.option_b,
-                "option_c": q.option_c,
-                "option_d": q.option_d,
-            }
-            for q in sample_questions
-        ],
-    }
-
-
-# ---------------------------------------------------------
-# RECRUITER ASSESSMENT RESULTS
-# ---------------------------------------------------------
-
-@router.get(
-    "/recruiter/assessments/results",
-    response_model=List[RecruiterAssessmentResultItem],
-)
-def get_recruiter_assessment_results(
-    job_id: Optional[int] = Query(None),
-    status_filter: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    recruiter: Recruiter = Depends(get_current_recruiter),
-    db: Session = Depends(get_db),
-):
-    query = (
-        db.query(CandidateAssessmentResult)
-        .join(Job)
-        .filter(Job.recruiter_id == recruiter.id)
-    )
-
-    if job_id:
-        query = query.filter(
-            CandidateAssessmentResult.job_id == job_id
-        )
-
-    if status_filter == "qualified":
-        query = query.filter(
-            CandidateAssessmentResult.is_qualified.is_(True)
-        )
-    elif status_filter == "not_qualified":
-        query = query.filter(
-            CandidateAssessmentResult.is_qualified.is_(False)
-        )
-
-    results = query.order_by(
-        desc(CandidateAssessmentResult.evaluated_at)
-    ).all()
-
-    # Fetch all proctoring sessions in one query.
-    assignment_ids = [
-        r.assignment_id
-        for r in results
-        if r.assignment_id is not None
+        for q in assessment.questions
     ]
 
-    sessions = []
-
-    if assignment_ids:
-        sessions = (
-            db.query(ProctoringSession)
-            .filter(
-                ProctoringSession.assignment_id.in_(assignment_ids)
-            )
-            .all()
-        )
-
-    session_map = {
-        session.assignment_id: session
-        for session in sessions
+    return {
+        "attempt_id": attempt.id,
+        "assessment_id": assessment.id,
+        "title": assessment.title,
+        "technology": assessment.technology,
+        "duration_minutes": assessment.duration_minutes,
+        "started_at": attempt.started_at,
+        "questions": question_items
     }
 
-    output = []
-
-    for r in results:
-        cand = r.candidate
-        cand_user = cand.user if cand else None
-        job = r.job
-        assignment = r.assignment
-
-        if search and search.strip():
-            term = search.strip().lower()
-
-            cand_name = (
-                cand_user.full_name.lower()
-                if cand_user and cand_user.full_name
-                else ""
-            )
-
-            cand_email = (
-                cand_user.email.lower()
-                if cand_user and cand_user.email
-                else ""
-            )
-
-            job_title = (
-                job.title.lower()
-                if job and job.title
-                else ""
-            )
-
-            if (
-                term not in cand_name
-                and term not in cand_email
-                and term not in job_title
-            ):
-                continue
-
-        session = session_map.get(r.assignment_id)
-
-        output.append({
-            "id": r.id,
-            "assignment_id": r.assignment_id,
-            "candidate_id": r.candidate_id,
-            "candidate_name": (
-                cand_user.full_name if cand_user else "Candidate"
-            ),
-            "candidate_email": (
-                cand_user.email if cand_user else ""
-            ),
-            "job_id": r.job_id,
-            "job_title": job.title if job else "",
-            "assessment_title": (
-                assignment.config_snapshot.get(
-                    "title",
-                    "Assessment",
-                )
-                if assignment and assignment.config_snapshot
-                else "Assessment"
-            ),
-            "obtained_marks": r.obtained_marks,
-            "total_marks": r.total_marks,
-            "percentage": r.percentage,
-            "correct_count": r.correct_count,
-            "incorrect_count": r.incorrect_count,
-            "unanswered_count": r.unanswered_count,
-            "passing_marks": r.passing_marks,
-            "qualification_rule": ">",
-            "is_qualified": r.is_qualified,
-            "is_flagged_for_review": (
-                session.is_flagged_for_review
-                if session
-                else False
-            ),
-            "time_taken_seconds": (
-                r.attempt.time_taken_seconds
-                if r.attempt
-                else 0
-            ),
-            "evaluated_at": r.evaluated_at,
-            "question_breakdown": r.question_breakdown,
-        })
-
-    return output
-
-
-# ---------------------------------------------------------
-# RECRUITER ASSESSMENT RESULT DETAILS
-# ---------------------------------------------------------
-
-@router.get("/recruiter/assessments/results/{result_id}")
-def get_recruiter_result_detail(
-    result_id: int,
-    recruiter: Recruiter = Depends(get_current_recruiter),
-    db: Session = Depends(get_db),
+@router.post("/attempts/{attempt_id}/submit", response_model=AssessmentAttemptResultResponse)
+def submit_assessment_attempt(
+    attempt_id: int,
+    req: AssessmentSubmissionRequest,
+    candidate: Candidate = Depends(get_current_candidate),
+    db: Session = Depends(get_db)
 ):
-    r = (
-        db.query(CandidateAssessmentResult)
-        .join(Job)
-        .filter(
-            CandidateAssessmentResult.id == result_id,
-            Job.recruiter_id == recruiter.id,
+    """
+    Submit answers, automatically compute actual score from database answers,
+    record question results with explanations, and update candidate history.
+    """
+    attempt = db.query(AssessmentAttempt).filter(
+        AssessmentAttempt.id == attempt_id,
+        AssessmentAttempt.candidate_id == candidate.id
+    ).first()
+    if not attempt:
+        raise NotFoundException("Assessment Attempt")
+
+    if attempt.completed_at:
+        raise BadRequestException("This assessment attempt has already been submitted.")
+
+    assessment = attempt.assessment
+    correct_count = 0
+    total_q = len(assessment.questions)
+    results_list = []
+
+    # Map question IDs to question records
+    q_map = {q.id: q for q in assessment.questions}
+
+    for sub in req.answers:
+        q = q_map.get(sub.question_id)
+        if not q:
+            continue
+
+        is_correct = (sub.selected_option.strip().upper() == q.correct_option.strip().upper())
+        if is_correct:
+            correct_count += 1
+
+        res = AssessmentResult(
+            attempt_id=attempt.id,
+            question_id=q.id,
+            selected_option=sub.selected_option.strip().upper(),
+            is_correct=is_correct
         )
-        .first()
-    )
+        db.add(res)
 
-    if not r:
-        raise NotFoundException("Assessment Result")
-
-    cand_user = r.candidate.user if r.candidate else None
-
-    session = (
-        db.query(ProctoringSession)
-        .filter(
-            ProctoringSession.assignment_id == r.assignment_id
+        results_list.append(
+            AssessmentQuestionResultItem(
+                question_id=q.id,
+                question_text=q.question_text,
+                selected_option=sub.selected_option.strip().upper(),
+                correct_option=q.correct_option,
+                is_correct=is_correct,
+                explanation=q.explanation
+            )
         )
-        .first()
-    )
+
+    score_percentage = round((correct_count / float(total_q)) * 100.0, 1) if total_q > 0 else 0.0
+    attempt.completed_at = datetime.datetime.utcnow()
+    attempt.score = score_percentage
+    attempt.passed = (score_percentage >= assessment.passing_score)
+
+    db.commit()
 
     return {
-        "id": r.id,
-        "assignment_id": r.assignment_id,
-        "candidate_id": r.candidate_id,
-        "candidate_name": (
-            cand_user.full_name if cand_user else ""
-        ),
-        "candidate_email": (
-            cand_user.email if cand_user else ""
-        ),
-        "job_title": r.job.title if r.job else "",
-        "assessment_title": (
-            r.assignment.config_snapshot.get("title")
-            if r.assignment and r.assignment.config_snapshot
-            else ""
-        ),
-        "obtained_marks": r.obtained_marks,
-        "total_marks": r.total_marks,
-        "percentage": r.percentage,
-        "correct_count": r.correct_count,
-        "incorrect_count": r.incorrect_count,
-        "unanswered_count": r.unanswered_count,
-        "passing_marks": r.passing_marks,
-        "qualification_rule": ">",
-        "is_qualified": r.is_qualified,
-        "qualification_message": r.qualification_message,
-        "is_flagged_for_review": (
-            session.is_flagged_for_review
-            if session
-            else False
-        ),
-        "time_taken_seconds": (
-            r.attempt.time_taken_seconds
-            if r.attempt
-            else 0
-        ),
-        "evaluated_at": r.evaluated_at,
-        "question_breakdown": r.question_breakdown,
+        "attempt_id": attempt.id,
+        "assessment_title": assessment.title,
+        "technology": assessment.technology,
+        "score": attempt.score,
+        "total_score": 100.0,
+        "passed": attempt.passed,
+        "started_at": attempt.started_at,
+        "completed_at": attempt.completed_at,
+        "question_results": results_list
     }
+
+@router.get("/attempts/history")
+def get_attempt_history(
+    candidate: Candidate = Depends(get_current_candidate),
+    db: Session = Depends(get_db)
+):
+    """View candidate's test attempts and scores."""
+    attempts = db.query(AssessmentAttempt).filter(
+        AssessmentAttempt.candidate_id == candidate.id
+    ).order_by(AssessmentAttempt.created_at.desc()).all()
+
+    return [
+        {
+            "id": a.id,
+            "assessment_id": a.assessment_id,
+            "title": a.assessment.title if a.assessment else "",
+            "technology": a.assessment.technology if a.assessment else "",
+            "score": a.score,
+            "passed": a.passed,
+            "completed_at": a.completed_at
+        }
+        for a in attempts
+    ]

@@ -3,8 +3,8 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, User, FileText, BriefcaseBusiness, Bookmark, Send,
   ClipboardCheck, BarChart3, Sparkles, Code2, Award, Users, Building2,
-  Database, GitCompare, CalendarDays, ShieldCheck, ShieldAlert,
-  FileSpreadsheet, Briefcase, MessageCircle, ChevronLeft, ChevronRight
+  Database, GitCompare, CalendarDays, ShieldCheck,
+  FileSpreadsheet, Briefcase, MessageCircle, ChevronLeft, ChevronRight, MessageSquareWarning
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -36,6 +36,7 @@ export default function Sidebar({ collapsed = false, onToggle }) {
     ['/recruiter/interviews', 'Interview Scheduling', CalendarDays],
     ['/recruiter/comparison', 'Compare Candidates', GitCompare],
     ['/recruiter/company', 'Company Profile', Building2],
+    ['/recruiter/ai-assistant', 'AI Assistant', Sparkles],
     ['/recruiter/support', 'Support Center', MessageCircle]
   ];
 
@@ -45,9 +46,8 @@ export default function Sidebar({ collapsed = false, onToggle }) {
     ['/admin/recruiters', 'Recruiter Verification', ShieldCheck],
     ['/admin/jobs', 'Job Moderation', Briefcase],
     ['/admin/pending-approvals', 'Pending Approvals', ClipboardCheck],
-    ['/admin/question-bank', 'Question Bank', Database],
-    ['/admin/proctoring', 'Proctoring History', ShieldAlert],
     ['/admin/audit-logs', 'Audit Logs', FileSpreadsheet],
+    ['/admin/chatbot-feedback', 'Assistant Feedback', MessageSquareWarning],
     ['/admin/support', 'Support Center', MessageCircle]
   ];
 

@@ -1,5 +1,11 @@
 from fastapi import APIRouter, Depends, status
+from fastapi import Request, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import update
+import hashlib
+import secrets
+import threading
+import time
 
 from app.database.session import get_db
 from app.core.config import settings
@@ -46,6 +52,43 @@ import datetime
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+_RESET_LIMIT_LOCK = threading.Lock()
+_RESET_REQUESTS: dict[str, list[float]] = {}
+_RESET_RATE_WINDOW_SECONDS = 900
+_RESET_RATE_MAX_REQUESTS = 5
+
+
+def _password_reset_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _enforce_password_reset_rate_limit(request: Request) -> None:
+    # Process-local fallback avoids adding infrastructure or a migration.
+    # Multi-worker production should use a shared limiter such as Redis.
+    now = time.monotonic()
+    address = request.client.host if request.client else "unknown"
+    with _RESET_LIMIT_LOCK:
+        for tracked_address, tracked_attempts in list(_RESET_REQUESTS.items()):
+            active_attempts = [
+                stamp for stamp in tracked_attempts
+                if now - stamp < _RESET_RATE_WINDOW_SECONDS
+            ]
+            if active_attempts:
+                _RESET_REQUESTS[tracked_address] = active_attempts
+            else:
+                _RESET_REQUESTS.pop(tracked_address, None)
+        if len(_RESET_REQUESTS) > 10000:
+            _RESET_REQUESTS.pop(next(iter(_RESET_REQUESTS)))
+        attempts = [
+            stamp for stamp in _RESET_REQUESTS.get(address, [])
+            if now - stamp < _RESET_RATE_WINDOW_SECONDS
+        ]
+        if len(attempts) >= _RESET_RATE_MAX_REQUESTS:
+            _RESET_REQUESTS[address] = attempts
+            raise HTTPException(status_code=429, detail="Too many password reset requests. Please try again later.")
+        attempts.append(now)
+        _RESET_REQUESTS[address] = attempts
 
 
 @router.post(
@@ -385,9 +428,12 @@ def verify_email(
 @router.post("/forgot-password")
 def forgot_password(
     req: ForgotPasswordRequest,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """Request a password reset link."""
+
+    _enforce_password_reset_rate_limit(request)
 
     user = db.query(User).filter(
         User.email == req.email.lower()
@@ -402,26 +448,33 @@ def forgot_password(
             )
         }
 
-    raw_token = create_verification_token(
-        user.email,
-        token_type="password_reset"
-    )
+    raw_token = secrets.token_urlsafe(32)
 
     expires = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
 
     token_record = PasswordResetToken(
         user_id=user.id,
-        token=raw_token,
+        token=_password_reset_fingerprint(raw_token),
         expires_at=expires
     )
 
     db.add(token_record)
-    db.commit()
+    db.flush()
 
-    EmailService.send_password_reset_email(
-        user.email,
-        raw_token
-    )
+    try:
+        EmailService.send_password_reset_email(
+            user.email,
+            raw_token
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        return {
+            "message": (
+                "If this email is registered, "
+                "a password reset link has been dispatched."
+            )
+        }
 
     return {
         "message": (
@@ -431,40 +484,60 @@ def forgot_password(
     }
 
 
+from sqlalchemy import update
+
 @router.post("/reset-password")
 def reset_password(
     req: ResetPasswordRequest,
     db: Session = Depends(get_db)
 ):
     """Reset account password using valid reset token."""
-
-    token_record = db.query(PasswordResetToken).filter(
-        PasswordResetToken.token == req.token,
-        PasswordResetToken.is_used == False
-    ).first()
-
-    if not token_record:
-        raise BadRequestException(
-            "Invalid or already used password reset token"
+    submitted_token = req.token.strip()
+    token_values = (_password_reset_fingerprint(submitted_token), submitted_token)
+    # Begin atomic transaction
+    with db.begin():
+        # Conditional UPDATE on the token row to ensure single‑use semantics
+        token_update_stmt = (
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.token.in_(token_values),
+                PasswordResetToken.is_used == False,
+                PasswordResetToken.expires_at > datetime.datetime.utcnow()
+            )
+            .values(is_used=True)
         )
-
-    if token_record.expires_at < datetime.datetime.utcnow():
-        raise BadRequestException(
-            "Password reset token has expired"
+        result = db.execute(token_update_stmt)
+        if result.rowcount != 1:
+            # Either token not found, already used, or expired
+            raise BadRequestException(
+                "Invalid or already used password reset token"
+            )
+        # Retrieve the user_id for the token that was just consumed
+        token_row = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token.in_(token_values)
+        ).first()
+        if not token_row:
+            raise BadRequestException("Invalid token after update")
+        # Update the user's password
+        pwd_update_stmt = (
+            update(User)
+            .where(User.id == token_row.user_id)
+            .values(hashed_password=get_password_hash(req.new_password))
         )
-
-    user = db.query(User).filter(
-        User.id == token_record.user_id
-    ).first()
-
-    if not user:
-        raise NotFoundException("User")
-
-    user.hashed_password = get_password_hash(req.new_password)
-    token_record.is_used = True
-
-    db.commit()
-
+        # Execute the password update and verify exactly one row was affected
+        pwd_result = db.execute(pwd_update_stmt)
+        if pwd_result.rowcount != 1:
+            raise BadRequestException("Failed to update user password")
+        db.execute(
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.user_id == token_row.user_id,
+                PasswordResetToken.id != token_row.id,
+                PasswordResetToken.is_used == False,
+            )
+            .values(is_used=True)
+        )
+    # Exiting the context manager commits the transaction – any exception rolls back both updates
     return {
         "message": (
             "Password reset successfully. "

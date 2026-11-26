@@ -80,6 +80,15 @@ export default function AdminProctoringHistory() {
 
   const viewRecording = async item => {
     try {
+      const linkResponse = await api.get(
+        `/admin/proctoring/assignments/${item.assignment_id}/recording-url`
+      );
+      if (linkResponse.data?.url) {
+        const opened = window.open(linkResponse.data.url, '_blank');
+        if (opened) opened.opener = null;
+        else window.location.assign(linkResponse.data.url);
+        return;
+      }
       const response = await api.get(
         `/admin/proctoring/assignments/${item.assignment_id}/recording`,
         { responseType: 'blob' }

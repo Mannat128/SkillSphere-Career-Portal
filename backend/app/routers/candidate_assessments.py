@@ -60,6 +60,41 @@ def get_owned_assignment(
     return assignment
 
 
+def as_utc_naive(value: str) -> datetime.datetime:
+    """Parse ISO availability timestamps as UTC for naive database clocks."""
+    parsed = datetime.datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    # Stored legacy/config values without an offset are defined as UTC.
+    return parsed
+
+
+def ensure_assessment_available(
+    config: dict,
+    now_utc_naive: datetime.datetime,
+) -> None:
+    """Enforce configured availability as a half-open UTC interval."""
+    available, status = assessment_availability(config, now_utc_naive)
+    if status == "future":
+        raise BadRequestException("This assessment is not available yet.")
+    if not available:
+        raise BadRequestException("The assessment availability window has ended.")
+
+
+def assessment_availability(
+    config: dict,
+    now_utc_naive: datetime.datetime,
+) -> tuple[bool, str]:
+    """Return availability from the server's UTC clock for candidate UI gating."""
+    available_from = config.get("available_from")
+    available_until = config.get("available_until")
+    if available_from and now_utc_naive < as_utc_naive(available_from):
+        return False, "future"
+    if available_until and now_utc_naive >= as_utc_naive(available_until):
+        return False, "expired"
+    return True, "available"
+
+
 def require_proctoring_consent(
     assignment: AssessmentAssignment,
     candidate: Candidate,
@@ -88,6 +123,11 @@ def require_proctoring_consent(
     if not session.camera_permission_granted:
         raise BadRequestException(
             "Camera permission is required before starting the assessment."
+        )
+
+    if not session.microphone_permission_granted:
+        raise BadRequestException(
+            "Microphone permission is required before starting the assessment."
         )
 
     return session
@@ -226,6 +266,36 @@ def get_assessment_instructions(
 
     config = assignment.config_snapshot or {}
     attempt = assignment.attempt
+    server_now = datetime.datetime.utcnow()
+    is_available, availability_status = assessment_availability(config, server_now)
+    terminal_assignment = assignment.status in {
+        "SUBMITTED", "QUALIFIED", "NOT_QUALIFIED", "EXPIRED",
+    }
+    has_started_attempt = bool(attempt and not attempt.is_submitted)
+    can_resume = bool(
+        has_started_attempt
+        and not terminal_assignment
+        and attempt.expires_at
+        and server_now < attempt.expires_at
+    )
+    can_start = bool(is_available and attempt is None and not terminal_assignment)
+    availability_messages = {
+        "future": "This assessment is not available yet.",
+        "expired": "The assessment availability window has ended.",
+        "available": "",
+    }
+    if terminal_assignment:
+        availability_messages[availability_status] = (
+            "This assessment is no longer available. Retakes are not allowed."
+        )
+    elif attempt and not attempt.is_submitted and not can_resume:
+        availability_messages[availability_status] = (
+            "This assessment attempt has expired and cannot be resumed."
+        )
+
+    # A start-window expiry closes camera access and all start/resume paths.
+    # A previously created attempt is not a bypass for the configured window.
+    can_resume = bool(can_resume and is_available)
 
     return {
         "assignment_id": assignment.id,
@@ -245,6 +315,15 @@ def get_assessment_instructions(
         "status": get_candidate_safe_status(assignment.status),
         "is_started": bool(attempt),
         "is_submitted": attempt.is_submitted if attempt else False,
+        "available_from": config.get("available_from"),
+        "available_until": config.get("available_until"),
+        "availability_checked_at": server_now.isoformat() + "Z",
+        "is_available": is_available,
+        "can_start": can_start,
+        "can_resume": can_resume,
+        "can_access_camera": can_start or can_resume,
+        "availability_status": availability_status,
+        "availability_message": availability_messages[availability_status],
     }
 
 
@@ -260,16 +339,38 @@ def start_or_resume_assessment(
     """Start or resume an assessment after verifying proctoring consent."""
     assignment = get_owned_assignment(assignment_id, candidate, db)
 
-    # Consent and camera permission are mandatory before an attempt starts.
-    require_proctoring_consent(assignment, candidate, db)
-
     config = assignment.config_snapshot or {}
     duration_min = config.get("duration_minutes", 30)
     now = datetime.datetime.utcnow()
-
     attempt = assignment.attempt
+    terminal_assignment = assignment.status in (
+        "SUBMITTED", "QUALIFIED", "NOT_QUALIFIED", "EXPIRED",
+    )
 
-    if attempt:
+    if terminal_assignment:
+        raise BadRequestException(
+            "This assessment is no longer available. Retakes are not allowed."
+        )
+
+    ensure_assessment_available(config, now)
+
+    if attempt is None:
+        require_proctoring_consent(assignment, candidate, db)
+        expires = now + datetime.timedelta(minutes=duration_min)
+        attempt = CandidateAssessmentAttempt(
+            assignment_id=assignment.id,
+            candidate_id=candidate.id,
+            started_at=now,
+            expires_at=expires,
+            is_submitted=False,
+            saved_answers={},
+            marked_for_review=[],
+        )
+        db.add(attempt)
+        assignment.status = "IN_PROGRESS"
+        db.commit()
+        db.refresh(attempt)
+    else:
         if attempt.candidate_id != candidate.id:
             raise NotFoundException("Assessment Attempt")
 
@@ -282,29 +383,7 @@ def start_or_resume_assessment(
             raise BadRequestException(
                 "Assessment duration has expired. Please submit your assessment."
             )
-
-    else:
-        if assignment.status in ("SUBMITTED", "QUALIFIED", "NOT_QUALIFIED", "EXPIRED"):
-            raise BadRequestException(
-                "This assessment is no longer available. Retakes are not allowed."
-            )
-
-        expires = now + datetime.timedelta(minutes=duration_min)
-
-        attempt = CandidateAssessmentAttempt(
-            assignment_id=assignment.id,
-            candidate_id=candidate.id,
-            started_at=now,
-            expires_at=expires,
-            is_submitted=False,
-            saved_answers={},
-            marked_for_review=[],
-        )
-
-        db.add(attempt)
-        assignment.status = "IN_PROGRESS"
-        db.commit()
-        db.refresh(attempt)
+        require_proctoring_consent(assignment, candidate, db)
 
     remaining_sec = max(
         0,

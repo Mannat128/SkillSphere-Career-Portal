@@ -2,6 +2,8 @@ import os
 import io
 import logging
 from typing import Tuple, Dict, Any, Optional
+import zipfile
+import xml.etree.ElementTree as ET
 import pymupdf
 from PIL import Image, ImageEnhance, ImageFilter
 from app.core.config import settings
@@ -100,6 +102,30 @@ class OCRService:
         return text, metadata
 
     @classmethod
+    def extract_from_docx(cls, file_path: str) -> Tuple[str, Dict[str, Any]]:
+        """Read DOCX paragraph text without extracting archive contents to disk."""
+        with zipfile.ZipFile(file_path) as archive:
+            entries = archive.infolist()
+            if len(entries) > 5000 or sum(item.file_size for item in entries) > 50 * 1024 * 1024:
+                raise ValueError("DOCX archive expands beyond the safe processing limit.")
+            if "word/document.xml" not in archive.namelist():
+                raise ValueError("The uploaded DOCX does not contain a valid Word document.")
+            document_xml = archive.read("word/document.xml")
+
+        root = ET.fromstring(document_xml)
+        namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = []
+        for paragraph in root.findall(".//w:p", namespace):
+            text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
+            if text:
+                paragraphs.append(text)
+        return "\n".join(paragraphs), {
+            "total_pages": None,
+            "extraction_method": "DOCX XML text extraction",
+            "is_scanned": False,
+        }
+
+    @classmethod
     def _run_tesseract(cls, image: Image.Image) -> str:
         """Run pytesseract if installed, otherwise log clear note."""
         try:
@@ -126,5 +152,7 @@ class OCRService:
             file_path.lower().endswith(ext) for ext in [".jpeg", ".jpg", ".png"]
         ):
             return cls.extract_from_image(file_path)
+        elif "wordprocessingml" in mime_type or file_path.lower().endswith(".docx"):
+            return cls.extract_from_docx(file_path)
         else:
             raise ValueError(f"Unsupported file format: {mime_type}")

@@ -146,6 +146,98 @@ def get_saved_jobs(
     return results
 
 
+@router.get("/recommended")
+def get_recommended_jobs(
+    limit: int = Query(5, ge=1, le=20),
+    candidate: Candidate = Depends(get_current_candidate),
+    db: Session = Depends(get_db)
+):
+    """Retrieve skill-matched job recommendations scored specifically for the current candidate."""
+    candidate_skills = {
+        cs.skill.name.lower(): (cs.proficiency or "Intermediate")
+        for cs in candidate.skills
+        if cs.skill
+    }
+
+    from app.models.candidate import JobAlertPreference
+    pref = db.query(JobAlertPreference).filter(
+        JobAlertPreference.candidate_id == candidate.id,
+        JobAlertPreference.is_active == True
+    ).first()
+
+    pref_keywords = [k.strip().lower() for k in (pref.keywords or "").split(",") if k.strip()] if pref else []
+    pref_location = (pref.preferred_location or "").strip().lower() if pref else ""
+
+    published_jobs = db.query(Job).filter(
+        Job.status == JobStatusEnum.PUBLISHED
+    ).order_by(desc(Job.created_at)).all()
+
+    scored_jobs = []
+    for job in published_jobs:
+        job_skills = [js.skill.name for js in job.required_skills if js.skill]
+        job_skills_lower = {s.lower() for s in job_skills}
+
+        matched_skills = [s for s in job_skills if s.lower() in candidate_skills]
+        missing_skills = [s for s in job_skills if s.lower() not in candidate_skills]
+
+        # 1. Skill coverage score (up to 70 pts)
+        if job_skills_lower:
+            skill_score = (len(matched_skills) / len(job_skills_lower)) * 70.0
+        else:
+            skill_score = 45.0
+
+        # 2. Location alignment score (up to 15 pts)
+        job_loc = (job.location or "").lower()
+        if "remote" in job_loc:
+            loc_score = 15.0
+        elif pref_location and (pref_location in job_loc or job_loc in pref_location):
+            loc_score = 15.0
+        else:
+            loc_score = 5.0
+
+        # 3. Title / Keyword alignment score (up to 15 pts)
+        keyword_score = 0.0
+        job_title_lower = (job.title or "").lower()
+        for kw in pref_keywords:
+            if kw in job_title_lower:
+                keyword_score = 15.0
+                break
+        if not keyword_score and any(sk in job_title_lower for sk in candidate_skills):
+            keyword_score = 10.0
+
+        final_score = int(round(min(100.0, max(15.0, skill_score + loc_score + keyword_score))))
+
+        scored_jobs.append({
+            "id": job.id,
+            "recruiter_id": job.recruiter_id,
+            "company_id": job.company_id,
+            "title": job.title,
+            "description": job.description,
+            "location": job.location,
+            "employment_type": job.employment_type,
+            "experience_level": job.experience_level,
+            "min_salary": float(job.min_salary) if job.min_salary else None,
+            "max_salary": float(job.max_salary) if job.max_salary else None,
+            "salary_currency": job.salary_currency,
+            "status": job.status,
+            "created_at": job.created_at,
+            "company": job.company,
+            "required_skills": job_skills,
+            "matched_skills": matched_skills,
+            "missing_skills": missing_skills,
+            "match_score": final_score,
+            "total_applicants": len(job.applications)
+        })
+
+    scored_jobs.sort(key=lambda j: (j["match_score"], j["created_at"]), reverse=True)
+
+    return {
+        "items": scored_jobs[:limit],
+        "total": len(scored_jobs),
+        "candidate_skills_count": len(candidate_skills)
+    }
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job_detail(
     job_id: int,

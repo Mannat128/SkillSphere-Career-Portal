@@ -1,6 +1,8 @@
+import io
 import os
 import uuid
 import datetime
+import zipfile
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, UploadFile, File, status, Response
 from fastapi.responses import FileResponse
@@ -20,9 +22,13 @@ from app.models.candidate import (
     CandidateSkill,
     CandidateEducation,
     CandidateExperience,
+    CandidateProject,
 )
 from app.models.skill import Skill
 from app.models.resume import Resume, ResumeOCRResult, OCRStatusEnum
+from app.models.application import Application
+from app.models.job import Job
+from app.models.recruiter import Recruiter
 from app.schemas.resume import (
     ResumeResponse,
     ResumeOCRResultResponse,
@@ -34,13 +40,67 @@ from app.services.resume_parser import ResumeParser
 
 router = APIRouter(prefix="/resumes", tags=["Resumes & OCR"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+
+def _authorize_resume_read(current_user: User, resume: Resume, db: Session) -> None:
+    """Allow owners, admins, and recruiters with an application to their job."""
+    if current_user.role == UserRole.ADMIN:
+        return
+
+    if current_user.role == UserRole.CANDIDATE:
+        if resume.candidate and resume.candidate.user_id == current_user.id:
+            return
+        raise ForbiddenException("You cannot access another candidate's private resume.")
+
+    if current_user.role == UserRole.RECRUITER:
+        recruiter_id = db.query(Recruiter.id).filter(
+            Recruiter.user_id == current_user.id
+        ).scalar()
+        if recruiter_id is not None:
+            application = db.query(Application.id).join(
+                Job, Application.job_id == Job.id
+            ).filter(
+                Application.resume_id == resume.id,
+                Job.recruiter_id == recruiter_id,
+            ).first()
+            if application:
+                return
+
+    raise ForbiddenException("You are not authorized to access this private resume.")
+
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".docx"}
 ALLOWED_MIME_TYPES = {
     "application/pdf",
     "image/jpeg",
     "image/jpg",
     "image/png",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+
+def validate_resume_content(file_ext: str, contents: bytes) -> None:
+    """Validate file signatures before storing uploaded resume bytes."""
+    valid = False
+    if file_ext == ".pdf":
+        valid = b"%PDF-" in contents[:1024]
+    elif file_ext == ".png":
+        valid = contents.startswith(b"\x89PNG\r\n\x1a\n")
+    elif file_ext in {".jpg", ".jpeg"}:
+        valid = contents.startswith(b"\xff\xd8\xff")
+    elif file_ext == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+                names = set(archive.namelist())
+                valid = (
+                    "[Content_Types].xml" in names
+                    and "word/document.xml" in names
+                    and len(names) <= 5000
+                    and sum(item.file_size for item in archive.infolist()) <= 50 * 1024 * 1024
+                    and archive.testzip() is None
+                )
+        except (zipfile.BadZipFile, OSError):
+            valid = False
+    if not valid:
+        raise BadRequestException("The uploaded file content does not match a supported resume format.")
 
 @router.post("/upload", response_model=ResumeResponse, status_code=status.HTTP_201_CREATED)
 async def upload_resume(
@@ -50,7 +110,7 @@ async def upload_resume(
 ):
     """
     Step 1 & Step 2 & Step 3:
-    Upload resume file (PDF, JPG, JPEG, PNG <= 10MB), execute digital PyMuPDF extraction
+    Upload resume file (PDF, DOCX, JPG, JPEG, PNG <= 10MB), execute digital extraction
     or Tesseract OCR, parse structured information, and calculate confidence scores.
     """
     # 1. Validation: filename and extension
@@ -79,6 +139,8 @@ async def upload_resume(
 
     if file_size == 0:
         raise BadRequestException("The uploaded file is empty.")
+
+    validate_resume_content(file_ext, contents)
 
     # 2. Save securely to private uploads folder
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -177,9 +239,7 @@ def get_resume_detail(
     if not resume:
         raise NotFoundException("Resume")
 
-    # Authorization: Owner candidate, authorized recruiter, or Admin
-    if current_user.role == UserRole.CANDIDATE and resume.candidate.user_id != current_user.id:
-        raise ForbiddenException()
+    _authorize_resume_read(current_user, resume, db)
 
     ocr_status = resume.ocr_result.status if resume.ocr_result else OCRStatusEnum.PENDING
     return {
@@ -205,6 +265,7 @@ def get_ocr_status(
     resume = db.query(Resume).filter(Resume.id == resume_id).first()
     if not resume:
         raise NotFoundException("Resume")
+    _authorize_resume_read(current_user, resume, db)
     return {
         "resume_id": resume.id,
         "status": resume.ocr_result.status if resume.ocr_result else "PENDING",
@@ -225,8 +286,7 @@ def get_extracted_data(
     if not resume or not resume.ocr_result:
         raise NotFoundException("Resume OCR result")
 
-    if current_user.role == UserRole.CANDIDATE and resume.candidate.user_id != current_user.id:
-        raise ForbiddenException()
+    _authorize_resume_read(current_user, resume, db)
 
     return resume.ocr_result
 
@@ -271,18 +331,37 @@ def confirm_and_save_profile(
     resume.ocr_result.verified_at = datetime.datetime.utcnow()
 
     if req.apply_to_profile:
-        # Apply phone / location if available and currently empty
-        if data.get("phone") and not candidate.phone:
-            candidate.phone = data["phone"]
-        if data.get("location") and not candidate.location:
-            candidate.location = data["location"]
-        if data.get("summary") and not candidate.bio:
-            candidate.bio = data["summary"]
+        # This endpoint runs only after the candidate explicitly confirms the review.
+        # Existing profile fields are filled only when empty; login email is never changed.
+        extracted_name = data.get("full_name")
+        if not ResumeParser.is_probable_person_name(extracted_name):
+            # Older OCR results may contain a section heading as the candidate
+            # name. Re-parse the stored text before applying the explicitly
+            # reviewed result, so a heading never replaces the account name.
+            reparsed, _ = ResumeParser.parse(resume.ocr_result.raw_text or "", db=db)
+            extracted_name = reparsed.get("full_name")
+            if ResumeParser.is_probable_person_name(extracted_name):
+                data["full_name"] = extracted_name
+        if ResumeParser.is_probable_person_name(extracted_name):
+            current_user.full_name = extracted_name.strip()
+        extracted_email = data.get("email")
+        if isinstance(extracted_email, str) and extracted_email.strip() and not candidate.contact_email:
+            candidate.contact_email = extracted_email.strip()
+        for field in (
+            "phone", "location", "headline", "bio", "linkedin_url",
+            "github_url", "portfolio_url", "additional_url",
+        ):
+            extracted_field = "summary" if field == "bio" else field
+            value = data.get(extracted_field)
+            if isinstance(value, str) and value.strip() and not getattr(candidate, field):
+                setattr(candidate, field, value.strip())
 
         # Apply Skills
         extracted_skills = data.get("skills", [])
         for skill_name in extracted_skills:
-            clean_name = skill_name.strip()
+            clean_name = skill_name.strip() if isinstance(skill_name, str) else ""
+            if not clean_name:
+                continue
             skill = db.query(Skill).filter(Skill.name.ilike(clean_name)).first()
             if not skill:
                 skill = Skill(name=clean_name, category="General")
@@ -318,7 +397,9 @@ def confirm_and_save_profile(
                         candidate_id=candidate.id,
                         institution=inst,
                         degree=deg,
-                        graduation_year=edu.get("graduation_year")
+                        field_of_study=edu.get("field_of_study"),
+                        graduation_year=edu.get("graduation_year"),
+                        grade=edu.get("grade"),
                     )
                     db.add(c_edu)
 
@@ -337,9 +418,37 @@ def confirm_and_save_profile(
                         candidate_id=candidate.id,
                         company=comp,
                         position=pos,
+                        start_date=exp.get("start_date"),
+                        end_date=exp.get("end_date"),
+                        is_current=bool(exp.get("is_current", False)),
                         description=exp.get("description")
                     )
                     db.add(c_exp)
+
+        # Projects are appended only when their title is not already on this profile.
+        for project in data.get("projects", []):
+            if not isinstance(project, dict):
+                continue
+            title = str(project.get("title") or "").strip()
+            if not title:
+                continue
+            existing_project = db.query(CandidateProject).filter(
+                CandidateProject.candidate_id == candidate.id,
+                CandidateProject.title.ilike(title),
+            ).first()
+            if existing_project:
+                continue
+            db.add(CandidateProject(
+                candidate_id=candidate.id,
+                title=title,
+                description=project.get("description"),
+                technologies=project.get("technologies"),
+                project_url=project.get("project_url"),
+                github_url=project.get("github_url"),
+                image_url=project.get("image_url"),
+                start_date=project.get("start_date"),
+                end_date=project.get("end_date"),
+            ))
 
     db.commit()
     return {"message": "Verified resume data successfully applied to candidate profile."}
@@ -358,9 +467,7 @@ def download_resume(
     if not resume:
         raise NotFoundException("Resume")
 
-    # Only owner candidate, recruiters, or admin can access
-    if current_user.role == UserRole.CANDIDATE and resume.candidate.user_id != current_user.id:
-        raise ForbiddenException("You cannot access another candidate's private document.")
+    _authorize_resume_read(current_user, resume, db)
 
     if not os.path.exists(resume.file_path):
         raise NotFoundException("Resume file on server disk")

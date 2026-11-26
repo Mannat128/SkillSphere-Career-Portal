@@ -464,7 +464,7 @@ def get_applicants(
             "candidate_headline": candidate.headline if candidate else None,
             "resume_id": app_rec.resume_id,
             "resume_url": (
-                f"/api/v1/resumes/{app_rec.resume_id}/download"
+                f"/resumes/{app_rec.resume_id}/download"
                 if app_rec.resume_id else None
             ),
             "cover_letter": app_rec.cover_letter,
@@ -545,8 +545,9 @@ def get_applicant_pipeline(
             "candidate_email": (
                 candidate_user.email if candidate_user else ""
             ),
+            "resume_id": app_rec.resume_id,
             "resume_url": (
-                f"/api/v1/resumes/{app_rec.resume_id}/download"
+                f"/resumes/{app_rec.resume_id}/download"
                 if app_rec.resume_id else None
             ),
             "match_score": analysis.match_score if analysis else None,
@@ -616,14 +617,13 @@ def update_applicant_status(
             AssessmentAssignmentService,
         )
 
-        try:
-            AssessmentAssignmentService.assign_assessment_to_shortlisted_candidate(
-                db,
-                app_rec,
-            )
-        except Exception:
-            # Assessment assignment failure should not undo the status update.
-            pass
+        # Do not silently persist a successful shortlist when the configured
+        # assessment could not be assigned. Let the failure abort this
+        # transaction so recruiter status and assessment assignment stay in sync.
+        AssessmentAssignmentService.assign_assessment_to_shortlisted_candidate(
+            db,
+            app_rec,
+        )
 
     db.commit()
 

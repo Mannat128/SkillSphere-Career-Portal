@@ -20,11 +20,15 @@ class BadRequestException(SkillSphereException):
         super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 class UnauthorizedException(SkillSphereException):
-    def __init__(self, detail: str = "Could not validate credentials"):
+    def __init__(self, detail: str = "Could not validate credentials", headers: Optional[dict[str, str]] = None):
+        # Always include WWW-Authenticate header for OAuth2
+        base_headers = {"WWW-Authenticate": "Bearer"}
+        if headers:
+            base_headers.update(headers)
         super().__init__(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=detail,
-            headers={"WWW-Authenticate": "Bearer"}
+            headers=base_headers
         )
 
 class ForbiddenException(SkillSphereException):

@@ -46,6 +46,8 @@ export default function AdminProctoringHistory() {
   const [violationsError, setViolationsError] = useState('');
   const [recordingId, setRecordingId] = useState(null);
   const [recordingUrl, setRecordingUrl] = useState('');
+  const [recordingIsRemote, setRecordingIsRemote] = useState(false);
+  const [recordingAssignmentId, setRecordingAssignmentId] = useState(null);
   const [recordingName, setRecordingName] = useState('');
   const [recordingError, setRecordingError] = useState('');
   const recordingUrlRef = useRef('');
@@ -56,6 +58,8 @@ export default function AdminProctoringHistory() {
       recordingUrlRef.current = '';
     }
     setRecordingUrl('');
+    setRecordingIsRemote(false);
+    setRecordingAssignmentId(null);
     setRecordingName('');
   }, []);
 
@@ -116,10 +120,20 @@ export default function AdminProctoringHistory() {
   };
 
   const viewRecording = async item => {
-    setRecordingId(item.assignment_id);
-    setRecordingError('');
     closeRecording();
+    setRecordingId(item.assignment_id);
+    setRecordingAssignmentId(item.assignment_id);
+    setRecordingError('');
     try {
+      const linkResponse = await api.get(
+        `/admin/proctoring/assignments/${item.assignment_id}/recording-url`
+      );
+      if (linkResponse.data?.url) {
+        setRecordingIsRemote(true);
+        setRecordingUrl(linkResponse.data.url);
+        setRecordingName(`Assessment recording — ${item.candidate_name || `Assignment ${item.assignment_id}`}`);
+        return;
+      }
       const response = await api.get(
         `/admin/proctoring/assignments/${item.assignment_id}/recording`,
         { responseType: 'blob' }
@@ -140,9 +154,24 @@ export default function AdminProctoringHistory() {
 
   const downloadRecording = () => {
     if (!recordingUrl) return;
+    if (recordingIsRemote && recordingAssignmentId) {
+      api.get(`/admin/proctoring/assignments/${recordingAssignmentId}/recording-url?attachment=true`)
+        .then(response => {
+          if (response.data?.url) {
+            const downloadLink = document.createElement('a');
+            downloadLink.href = response.data.url;
+            downloadLink.rel = 'noopener';
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+          }
+        })
+        .catch(error => setRecordingError(error.message || 'Unable to create a secure download link.'));
+      return;
+    }
     const link = document.createElement('a');
     link.href = recordingUrl;
-    link.download = `proctoring-${selectedViolations?.assignment_id || recordingId || 'recording'}.webm`;
+    link.download = `proctoring-${selectedViolations?.assignment_id || recordingAssignmentId || recordingId || 'recording'}.webm`;
     document.body.appendChild(link);
     link.click();
     link.remove();

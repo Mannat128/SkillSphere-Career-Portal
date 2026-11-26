@@ -1,5 +1,6 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+from urllib.parse import urlsplit, urlunsplit
 
 class EducationItem(BaseModel):
     id: Optional[int] = None
@@ -31,6 +32,33 @@ class ProjectItem(BaseModel):
     description: Optional[str] = None
     technologies: Optional[str] = None
     project_url: Optional[str] = None
+    github_url: Optional[str] = None
+    image_url: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+    @field_validator("project_url", "github_url", "image_url")
+    @classmethod
+    def validate_project_urls(cls, value):
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if not parsed.scheme:
+            normalized = f"https://{normalized}"
+            parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Project links must be valid HTTP or HTTPS URLs.")
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+    @model_validator(mode="after")
+    def validate_project_dates(self):
+        allowed = (r"\d{4}", r"\d{4}-\d{2}", r"\d{4}-\d{2}-\d{2}")
+        import re
+        for value in (self.start_date, self.end_date):
+            if value and not any(re.fullmatch(pattern, value.strip()) for pattern in allowed):
+                raise ValueError("Project dates must use YYYY, YYYY-MM, or YYYY-MM-DD.")
+        return self
 
     class Config:
         from_attributes = True
@@ -52,10 +80,56 @@ class CandidateSkillItem(BaseModel):
     years_of_experience: float = 1.0
 
 class CandidateProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=2, max_length=150)
+    contact_email: Optional[str] = None
     phone: Optional[str] = None
     location: Optional[str] = None
     headline: Optional[str] = None
     bio: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+    additional_url: Optional[str] = None
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value):
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if len(normalized) < 2:
+            raise ValueError("Enter your full name.")
+        if normalized.casefold() in {
+            "professional summary", "summary", "profile", "experience",
+            "education", "skills", "projects", "resume", "curriculum vitae",
+        }:
+            raise ValueError("Enter a person’s name, not a resume section heading.")
+        return normalized
+
+    @field_validator("linkedin_url", "github_url", "portfolio_url", "additional_url")
+    @classmethod
+    def validate_profile_urls(cls, value):
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if not parsed.scheme:
+            normalized = f"https://{normalized}"
+            parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Professional links must be valid HTTP or HTTPS URLs.")
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+    @field_validator("contact_email")
+    @classmethod
+    def validate_contact_email(cls, value):
+        if value is None or not value.strip():
+            return None
+        from email_validator import validate_email, EmailNotValidError
+        try:
+            return validate_email(value.strip(), check_deliverability=False).normalized
+        except EmailNotValidError as exc:
+            raise ValueError("Enter a valid contact email address.") from exc
 
 class CareerPreferencesUpdate(BaseModel):
     preferred_job_titles: Optional[List[str]] = None
@@ -106,10 +180,15 @@ class CandidateResponse(BaseModel):
     user_id: int
     full_name: str
     email: str
+    contact_email: Optional[str] = None
     phone: Optional[str] = None
     location: Optional[str] = None
     headline: Optional[str] = None
     bio: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+    additional_url: Optional[str] = None
     profile_percentage: int
     avatar_url: Optional[str] = None
     visibility: str = "PUBLIC_TO_RECRUITERS"

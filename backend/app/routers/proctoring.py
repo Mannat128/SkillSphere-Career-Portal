@@ -1,5 +1,6 @@
 
 import datetime
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from app.core.dependencies import (
     get_current_candidate,
     get_current_recruiter,
     get_current_admin,
+    get_current_user,
+    oauth2_scheme,
 )
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.models.candidate import Candidate
@@ -22,6 +25,8 @@ from app.models.recruiter_assessment import AssessmentAssignment
 from app.models.proctoring import ProctoringSession
 from app.models.proctoring_violation import ProctoringViolation
 from app.models.audit import AuditLog
+from app.services.recording_retention import recording_expiry_at, sync_recording_expiry
+from app.routers.candidate_assessments import ensure_assessment_available
 
 
 # Separate routers are required for correct role-based URLs.
@@ -87,17 +92,27 @@ def is_recording_available(session: ProctoringSession | None, now=None) -> bool:
 
     now = now or datetime.datetime.utcnow()
 
-    if session.delete_after and now >= session.delete_after:
+    if is_recording_expired(session, now):
         return False
 
-    path = Path(session.recording_path)
+    from app.services.storage_service import StorageService
+    return StorageService.is_file_available(session.recording_path)
 
-    return is_private_recording_path(path) and path.is_file()
+
+def is_recording_expired(session: ProctoringSession, now=None) -> bool:
+    now = now or datetime.datetime.utcnow()
+    assignment = getattr(session, "assignment", None)
+    attempt = getattr(assignment, "attempt", None) if assignment else None
+    if not attempt or not attempt.is_submitted or not attempt.submitted_at:
+        return True
+    expires_at = recording_expiry_at(attempt.submitted_at)
+    return now >= expires_at
 
 
 class ProctoringConsentRequest(BaseModel):
     consent_given: bool
     camera_permission_granted: bool
+    microphone_permission_granted: bool = False
     consent_version: str = "v1"
 
 
@@ -128,14 +143,17 @@ def get_candidate_assignment(
 def get_proctoring_session(
     assignment_id: int,
     db: Session,
+    for_update: bool = False,
 ):
-    session = (
+    query = (
         db.query(ProctoringSession)
         .filter(
             ProctoringSession.assignment_id == assignment_id
         )
-        .first()
     )
+    if for_update:
+        query = query.with_for_update()
+    session = query.first()
 
     if not session:
         raise NotFoundException("Proctoring Session")
@@ -163,6 +181,162 @@ def add_audit_log(
     db.add(log)
 
 
+def audit_recording_event(
+    db: Session,
+    request: Request,
+    assignment_id: int,
+    user_id: int | None,
+    role: str,
+    action: str,
+    outcome: str,
+    session_id: int | None = None,
+    status_code: int | None = None,
+):
+    """Persist a recording access event without storing URLs, tokens, or secrets."""
+    occurred_at = datetime.datetime.utcnow()
+    details = {
+        "role": role,
+        "outcome": outcome,
+        "recording_session_id": session_id,
+        "timestamp": occurred_at.isoformat() + "Z",
+    }
+    if status_code is not None:
+        details["status_code"] = status_code
+    db.add(AuditLog(
+        user_id=user_id,
+        action=action,
+        entity_type="proctoring_recording",
+        entity_id=assignment_id,
+        ip_address=request.client.host if request.client else None,
+        details=details,
+        created_at=occurred_at,
+    ))
+    db.commit()
+
+
+def audit_failed_recording_request(
+    db: Session,
+    request: Request,
+    assignment_id: int,
+    user_id: int | None,
+    role: str,
+    error: HTTPException,
+):
+    session_id = None
+    try:
+        session_id = db.query(ProctoringSession.id).filter(
+            ProctoringSession.assignment_id == assignment_id
+        ).scalar()
+    except Exception:
+        # The denied/invalid request still gets an audit row when session lookup fails.
+        db.rollback()
+    forbidden = error.status_code == 403
+    audit_recording_event(
+        db=db,
+        request=request,
+        assignment_id=assignment_id,
+        user_id=user_id,
+        role=role,
+        action="PROCTORING_RECORDING_ACCESS_DENIED" if forbidden else "PROCTORING_RECORDING_ACCESS_FAILED",
+        outcome="denied" if forbidden else "failed",
+        session_id=session_id,
+        status_code=error.status_code,
+    )
+
+
+def get_recording_actor(request: Request, db: Session, token: str, required_role: str):
+    """Authenticate recording viewers here so authentication/role denials are audited too."""
+    assignment_id = request.path_params.get("assignment_id")
+    try:
+        assignment_id = int(assignment_id) if assignment_id is not None else 0
+        user = get_current_user(token=token, db=db)
+    except HTTPException as exc:
+        audit_failed_recording_request(db, request, assignment_id or 0, None, required_role, exc)
+        raise
+
+    actual_role = getattr(user.role, "value", str(user.role)).upper()
+    if actual_role != required_role:
+        error = HTTPException(status_code=403, detail="You are not authorized to access proctoring recordings.")
+        audit_failed_recording_request(db, request, assignment_id or 0, user.id, actual_role, error)
+        raise error
+
+    if required_role == "RECRUITER":
+        recruiter = db.query(Recruiter).filter(Recruiter.user_id == user.id).first()
+        if not recruiter:
+            error = HTTPException(status_code=403, detail="Recruiter profile not found.")
+            audit_failed_recording_request(db, request, assignment_id or 0, user.id, actual_role, error)
+            raise error
+        return recruiter
+    return user
+
+
+def get_recording_recruiter(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    return get_recording_actor(request, db, token, "RECRUITER")
+
+
+def get_recording_admin(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    return get_recording_actor(request, db, token, "ADMIN")
+
+
+def create_recording_playback_link(
+    assignment_id: int,
+    request: Request,
+    user_id: int,
+    access_role: str,
+    db: Session,
+    attachment: bool = False,
+):
+    try:
+        session, recording_path = get_authorized_recording(assignment_id, db)
+    except HTTPException as exc:
+        audit_failed_recording_request(db, request, assignment_id, user_id, access_role, exc)
+        raise
+    if not isinstance(recording_path, str) or not recording_path.startswith(("cloudinary://", "s3://")):
+        return {"url": None, "expires_in_seconds": 600}
+
+    from app.services.storage_service import StorageService
+    try:
+        if recording_path.startswith("cloudinary://"):
+            asset_format = session.cloudinary_format or (session.recording_mime_type or "video/webm").split("/")[-1]
+            signed_url = StorageService.get_access_url(
+                recording_path,
+                expires_in_seconds=600,
+                asset_format=asset_format,
+                attachment=attachment,
+            )
+        else:
+            signed_url = StorageService.get_access_url(
+                recording_path,
+                expires_in_seconds=600,
+                attachment=attachment,
+            )
+    except Exception as exc:
+        audit_recording_event(
+            db, request, assignment_id, user_id, access_role,
+            "PROCTORING_RECORDING_SIGNED_URL_GENERATION_FAILED", "failed", session.id, 502,
+        )
+        raise
+
+    audit_recording_event(
+        db, request, assignment_id, user_id, access_role,
+        "PROCTORING_RECORDING_SIGNED_URL_GENERATED" if not attachment else "PROCTORING_RECORDING_DOWNLOAD_URL_GENERATED",
+        "success", session.id,
+    )
+    return {
+        "url": signed_url,
+        "expires_in_seconds": 600,
+        "expires_at": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10),
+    }
+
+
 def get_authorized_recording(
     assignment_id: int,
     db: Session,
@@ -177,8 +351,14 @@ def get_authorized_recording(
     ):
         raise NotFoundException("Proctoring Recording")
 
-    if session.delete_after and datetime.datetime.utcnow() >= session.delete_after:
+    if is_recording_expired(session):
         raise NotFoundException("Proctoring Recording")
+
+    if session.recording_path.startswith(("s3://", "cloudinary://")):
+        from app.services.storage_service import StorageService
+        if not StorageService.is_file_available(session.recording_path):
+            raise NotFoundException("Proctoring Recording")
+        return session, session.recording_path
 
     recording_path = Path(session.recording_path).resolve()
 
@@ -192,6 +372,50 @@ def get_authorized_recording(
         raise NotFoundException("Proctoring Recording")
 
     return session, recording_path
+
+
+def ensure_recording_upload_allowed(session: ProctoringSession) -> None:
+    if session.recording_path and not session.recording_deleted_at:
+        raise BadRequestException("A recording has already been uploaded.")
+    if not session.recording_started_at or session.session_status != "RECORDING":
+        raise BadRequestException("Start the recording session before uploading.")
+
+
+def persist_recording_storage_metadata(session: ProctoringSession, metadata: dict) -> None:
+    session.recording_path = metadata["storage_reference"]
+    session.recording_provider = metadata.get("provider")
+    session.cloudinary_asset_id = metadata.get("asset_id")
+    session.cloudinary_public_id = metadata.get("public_id")
+    session.cloudinary_version = metadata.get("version")
+    session.cloudinary_format = metadata.get("format")
+    session.cloudinary_resource_type = metadata.get("resource_type")
+    session.cloudinary_delivery_type = metadata.get("delivery_type")
+
+
+def recording_metadata_matches(
+    session: ProctoringSession | None,
+    metadata: dict,
+    content_type: str,
+    size_bytes: int,
+    assessment_submitted_at: datetime.datetime | None = None,
+) -> bool:
+    """Confirm a commit with an ambiguous response actually persisted all recording metadata."""
+    if not session or session.session_status != "COMPLETED" or not session.recording_completed_at:
+        return False
+    return all((
+        session.recording_path == metadata.get("storage_reference"),
+        session.recording_provider == metadata.get("provider"),
+        session.cloudinary_asset_id == metadata.get("asset_id"),
+        session.cloudinary_public_id == metadata.get("public_id"),
+        session.cloudinary_version == metadata.get("version"),
+        session.cloudinary_format == metadata.get("format"),
+        session.cloudinary_resource_type == metadata.get("resource_type"),
+        session.cloudinary_delivery_type == metadata.get("delivery_type"),
+        session.recording_mime_type == content_type,
+        session.recording_size_bytes == size_bytes,
+        session.delete_after == recording_expiry_at(assessment_submitted_at),
+        session.recording_deleted_at is None,
+    ))
 
 
 def get_assignment_for_recruiter(
@@ -249,9 +473,17 @@ def save_proctoring_consent(
         raise BadRequestException(
             "Camera permission is required before starting the assessment."
         )
+    if not request.microphone_permission_granted:
+        raise BadRequestException("Microphone permission is required for proctoring audio.")
 
     assignment = get_candidate_assignment(
         assignment_id, candidate, db
+    )
+
+    # Consent is part of assessment access. Reject it server-side outside the
+    # configured UTC window, even when a client bypasses the instructions UI.
+    ensure_assessment_available(
+        assignment.config_snapshot or {}, datetime.datetime.utcnow()
     )
 
     if assignment.attempt and assignment.attempt.is_submitted:
@@ -277,7 +509,8 @@ def save_proctoring_consent(
         session.consent_given = True
         session.consent_version = request.consent_version
         session.consented_at = now
-        session.camera_permission_granted = True
+        session.camera_permission_granted = request.camera_permission_granted
+        session.microphone_permission_granted = request.microphone_permission_granted
         session.session_status = "READY"
         session.updated_at = now
 
@@ -288,7 +521,8 @@ def save_proctoring_consent(
             consent_given=True,
             consent_version=request.consent_version,
             consented_at=now,
-            camera_permission_granted=True,
+            camera_permission_granted=request.camera_permission_granted,
+            microphone_permission_granted=request.microphone_permission_granted,
             session_status="READY",
         )
 
@@ -327,9 +561,16 @@ def start_recording(
             "This assessment has already been submitted."
         )
 
+    now = datetime.datetime.utcnow()
+    ensure_assessment_available(assignment.config_snapshot or {}, now)
+    if now >= assignment.attempt.expires_at:
+        raise BadRequestException(
+            "Assessment duration has expired. Recording cannot be started."
+        )
+
     session = get_proctoring_session(assignment_id, db)
 
-    if not session.consent_given or not session.camera_permission_granted:
+    if not session.consent_given or not session.camera_permission_granted or not session.microphone_permission_granted:
         raise BadRequestException("Proctoring consent is required.")
 
     if session.recording_path and not session.recording_deleted_at:
@@ -341,8 +582,6 @@ def start_recording(
         raise BadRequestException(
             "A recording session is already active."
         )
-
-    now = datetime.datetime.utcnow()
 
     session.recording_started_at = now
     session.recording_completed_at = None
@@ -391,7 +630,7 @@ def abort_recording(
 
     session = get_proctoring_session(assignment_id, db)
 
-    if not session.consent_given or not session.camera_permission_granted:
+    if not session.consent_given or not session.camera_permission_granted or not session.microphone_permission_granted:
         raise BadRequestException("Proctoring consent is required.")
 
     # Never allow this recovery route to alter an uploaded recording.
@@ -446,7 +685,7 @@ async def upload_recording(
         assignment_id, candidate, db
     )
 
-    session = get_proctoring_session(assignment_id, db)
+    session = get_proctoring_session(assignment_id, db, for_update=True)
 
     if not assignment.attempt:
         raise BadRequestException(
@@ -458,18 +697,10 @@ async def upload_recording(
             "This assessment has already been submitted."
         )
 
-    if not session.consent_given or not session.camera_permission_granted:
+    if not session.consent_given or not session.camera_permission_granted or not session.microphone_permission_granted:
         raise BadRequestException("Proctoring consent is required.")
 
-    if not session.recording_started_at or session.session_status != "RECORDING":
-        raise BadRequestException(
-            "Start the recording session before uploading."
-        )
-
-    if session.recording_path and not session.recording_deleted_at:
-        raise BadRequestException(
-            "A recording has already been uploaded."
-        )
+    ensure_recording_upload_allowed(session)
 
     content_type = (file.content_type or "").lower()
 
@@ -491,6 +722,8 @@ async def upload_recording(
     recording_path = PRIVATE_RECORDING_DIR / stored_filename
     total_bytes = 0
     signature = bytearray()
+    stored_metadata = None
+    upload_digest = hashlib.sha256()
 
     try:
         # Stream to disk in bounded chunks; never load a 500 MB recording into RAM.
@@ -512,6 +745,7 @@ async def upload_recording(
                     signature.extend(chunk[:needed])
 
                 output.write(chunk)
+                upload_digest.update(chunk)
 
         if total_bytes == 0:
             raise BadRequestException("The uploaded recording is empty.")
@@ -521,22 +755,56 @@ async def upload_recording(
                 "The uploaded file does not match its declared video format."
             )
 
+        from app.services.storage_service import StorageService
+        stored_metadata = StorageService.save_recording_with_metadata(
+            source_path=recording_path,
+            destination_filename=stored_filename,
+            content_type=content_type,
+            idempotency_key=f"assessment-{assignment_id}",
+            content_sha256=upload_digest.hexdigest(),
+        )
+        stored_reference = stored_metadata["storage_reference"]
+
         now = datetime.datetime.utcnow()
 
         session.recording_filename = file.filename or stored_filename
-        session.recording_path = str(recording_path.resolve())
+        persist_recording_storage_metadata(session, stored_metadata)
         session.recording_mime_type = content_type
         session.recording_size_bytes = total_bytes
         session.recording_completed_at = now
-        session.delete_after = now + datetime.timedelta(days=30)
+        # A recording can exist before assessment submission. Keep expiry unset
+        # until the attempt's authoritative submitted_at is available.
+        sync_recording_expiry(session, assignment.attempt)
         session.recording_deleted_at = None
         session.session_status = "COMPLETED"
         session.updated_at = now
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            # Commit responses can be lost after the database committed. Read
+            # the row back and report success only if the whole metadata set is
+            # persisted; otherwise preserve Cloudinary for a stable-ID retry.
+            db.rollback()
+            persisted = db.query(ProctoringSession).filter(
+                ProctoringSession.assignment_id == assignment_id
+            ).first()
+            if not recording_metadata_matches(
+                persisted,
+                stored_metadata,
+                content_type,
+                total_bytes,
+                assignment.attempt.submitted_at if assignment.attempt and assignment.attempt.is_submitted else None,
+            ):
+                raise
+            session = persisted
 
     except Exception:
         db.rollback()
+
+        # Do not delete the Cloudinary object on commit exceptions: some database
+        # drivers can report a lost commit response after the transaction landed.
+        # The stable upload ID + content fingerprint lets a retry reconcile it.
 
         if recording_path.exists():
             recording_path.unlink()
@@ -567,7 +835,11 @@ def record_proctoring_violation(
         "WINDOW_BLUR",
         "FULLSCREEN_EXIT",
         "CAMERA_DISCONNECTED",
+        "MICROPHONE_DISCONNECTED",
+        "RECORDING_FAILURE",
         "RECORDING_STOPPED",
+        "AI_NO_FACE_DETECTED",
+        "AI_LOOKING_AWAY_DETECTED",
     }
 
     violation_type = request.violation_type.strip().upper()
@@ -588,7 +860,7 @@ def record_proctoring_violation(
 
     session = get_proctoring_session(assignment_id, db)
 
-    if not session.consent_given or not session.camera_permission_granted:
+    if not session.consent_given or not session.camera_permission_granted or not session.microphone_permission_granted:
         raise BadRequestException("Proctoring consent is required.")
 
     if session.session_status != "RECORDING":
@@ -658,33 +930,36 @@ def get_proctoring_status(
 def recruiter_view_recording(
     assignment_id: int,
     request: Request,
-    recruiter: Recruiter = Depends(get_current_recruiter),
+    recruiter: Recruiter = Depends(get_recording_recruiter),
     db: Session = Depends(get_db),
 ):
-    get_assignment_for_recruiter(assignment_id, recruiter, db)
+    try:
+        get_assignment_for_recruiter(assignment_id, recruiter, db)
+        session, recording_path = get_authorized_recording(assignment_id, db)
+    except HTTPException as exc:
+        audit_failed_recording_request(db, request, assignment_id, recruiter.user_id, "RECRUITER", exc)
+        raise
 
-    session, recording_path = get_authorized_recording(
-        assignment_id, db
-    )
+    if isinstance(recording_path, str) and recording_path.startswith(("s3://", "cloudinary://")):
+        from app.services.storage_service import StorageService
+        from fastapi.responses import RedirectResponse
+        try:
+            if recording_path.startswith("cloudinary://"):
+                file_format = session.cloudinary_format or (session.recording_mime_type or "video/webm").split("/")[-1]
+                signed_url = StorageService.get_access_url(recording_path, expires_in_seconds=600, asset_format=file_format)
+            else:
+                signed_url = StorageService.get_access_url(recording_path, expires_in_seconds=600)
+        except Exception:
+            audit_recording_event(db, request, assignment_id, recruiter.user_id, "RECRUITER", "PROCTORING_RECORDING_SIGNED_URL_GENERATION_FAILED", "failed", session.id, 502)
+            raise
+        audit_recording_event(db, request, assignment_id, recruiter.user_id, "RECRUITER", "PROCTORING_RECORDING_ACCESSED", "success", session.id)
+        return RedirectResponse(url=signed_url, status_code=307, headers={"Cache-Control": "private, no-store"})
 
-    if session.delete_after and datetime.datetime.utcnow() >= session.delete_after:
-        raise NotFoundException("Proctoring Recording")
-
-    add_audit_log(
-        db=db,
-        user_id=recruiter.user_id,
-        action="PROCTORING_RECORDING_ACCESSED",
-        assignment_id=assignment_id,
-        request=request,
-        details={"access_role": "RECRUITER"},
-    )
-
-    db.commit()
-
+    audit_recording_event(db, request, assignment_id, recruiter.user_id, "RECRUITER", "PROCTORING_RECORDING_ACCESSED", "success", session.id)
     return FileResponse(
         path=str(recording_path),
         media_type=session.recording_mime_type or "application/octet-stream",
-        filename=session.recording_filename or recording_path.name,
+        filename=session.recording_filename or (recording_path.name if hasattr(recording_path, "name") else "recording.webm"),
         headers={"Cache-Control": "private, no-store", "Pragma": "no-cache"},
     )
 
@@ -733,6 +1008,24 @@ def recruiter_view_violations(
     }
 
 
+@recruiter_router.get("/assignments/{assignment_id}/recording-url")
+def recruiter_recording_playback_url(
+    assignment_id: int,
+    request: Request,
+    attachment: bool = False,
+    recruiter: Recruiter = Depends(get_recording_recruiter),
+    db: Session = Depends(get_db),
+):
+    try:
+        get_assignment_for_recruiter(assignment_id, recruiter, db)
+    except HTTPException as exc:
+        audit_failed_recording_request(db, request, assignment_id, recruiter.user_id, "RECRUITER", exc)
+        raise
+    return create_recording_playback_link(
+        assignment_id, request, recruiter.user_id, "RECRUITER", db, attachment
+    )
+
+
 # ---------------------------------------------------------
 # ADMIN ROUTES
 # ---------------------------------------------------------
@@ -741,32 +1034,49 @@ def recruiter_view_violations(
 def admin_view_recording(
     assignment_id: int,
     request: Request,
-    admin=Depends(get_current_admin),
+    admin=Depends(get_recording_admin),
     db: Session = Depends(get_db),
 ):
-    session, recording_path = get_authorized_recording(
-        assignment_id, db
-    )
+    try:
+        session, recording_path = get_authorized_recording(assignment_id, db)
+    except HTTPException as exc:
+        audit_failed_recording_request(db, request, assignment_id, admin.id, "ADMIN", exc)
+        raise
 
-    if session.delete_after and datetime.datetime.utcnow() >= session.delete_after:
-        raise NotFoundException("Proctoring Recording")
+    if isinstance(recording_path, str) and recording_path.startswith(("s3://", "cloudinary://")):
+        from app.services.storage_service import StorageService
+        from fastapi.responses import RedirectResponse
+        try:
+            if recording_path.startswith("cloudinary://"):
+                file_format = session.cloudinary_format or (session.recording_mime_type or "video/webm").split("/")[-1]
+                signed_url = StorageService.get_access_url(recording_path, expires_in_seconds=600, asset_format=file_format)
+            else:
+                signed_url = StorageService.get_access_url(recording_path, expires_in_seconds=600)
+        except Exception:
+            audit_recording_event(db, request, assignment_id, admin.id, "ADMIN", "PROCTORING_RECORDING_SIGNED_URL_GENERATION_FAILED", "failed", session.id, 502)
+            raise
+        audit_recording_event(db, request, assignment_id, admin.id, "ADMIN", "PROCTORING_RECORDING_ACCESSED", "success", session.id)
+        return RedirectResponse(url=signed_url, status_code=307, headers={"Cache-Control": "private, no-store"})
 
-    add_audit_log(
-        db=db,
-        user_id=admin.id,
-        action="PROCTORING_RECORDING_ACCESSED",
-        assignment_id=assignment_id,
-        request=request,
-        details={"access_role": "ADMIN"},
-    )
-
-    db.commit()
-
+    audit_recording_event(db, request, assignment_id, admin.id, "ADMIN", "PROCTORING_RECORDING_ACCESSED", "success", session.id)
     return FileResponse(
         path=str(recording_path),
         media_type=session.recording_mime_type or "application/octet-stream",
-        filename=session.recording_filename or recording_path.name,
+        filename=session.recording_filename or (recording_path.name if hasattr(recording_path, "name") else "recording.webm"),
         headers={"Cache-Control": "private, no-store", "Pragma": "no-cache"},
+    )
+
+
+@admin_router.get("/assignments/{assignment_id}/recording-url")
+def admin_recording_playback_url(
+    assignment_id: int,
+    request: Request,
+    attachment: bool = False,
+    admin=Depends(get_recording_admin),
+    db: Session = Depends(get_db),
+):
+    return create_recording_playback_link(
+        assignment_id, request, admin.id, "ADMIN", db, attachment
     )
 
 

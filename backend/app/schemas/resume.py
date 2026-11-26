@@ -1,7 +1,8 @@
 from typing import List, Optional, Dict, Any
 import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.models.resume import OCRStatusEnum
+from urllib.parse import urlsplit
 
 class ExtractedEducation(BaseModel):
     institution: Optional[str] = None
@@ -56,6 +57,45 @@ class ResumeOCRResultResponse(BaseModel):
 
 class ResumeReviewUpdateRequest(BaseModel):
     extracted_data: Dict[str, Any]
+
+    @field_validator("extracted_data")
+    @classmethod
+    def validate_review_urls(cls, data):
+        if not isinstance(data, dict):
+            raise ValueError("Extracted resume data must be an object.")
+        url_fields = ("linkedin_url", "github_url", "portfolio_url", "additional_url")
+        for field in url_fields:
+            value = data.get(field)
+            if not value:
+                continue
+            if not isinstance(value, str):
+                raise ValueError(f"{field} must be a URL string.")
+            normalized = value.strip()
+            parsed = urlsplit(normalized)
+            if not parsed.scheme:
+                normalized = f"https://{normalized}"
+                parsed = urlsplit(normalized)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError(f"{field} must be a valid HTTP or HTTPS URL.")
+            data[field] = normalized
+        for project in data.get("projects", []) or []:
+            if not isinstance(project, dict):
+                raise ValueError("Each extracted project must be an object.")
+            for field in ("project_url", "github_url", "image_url"):
+                value = project.get(field)
+                if not value:
+                    continue
+                if not isinstance(value, str):
+                    raise ValueError(f"Project {field} must be a URL string.")
+                normalized = value.strip()
+                parsed = urlsplit(normalized)
+                if not parsed.scheme:
+                    normalized = f"https://{normalized}"
+                    parsed = urlsplit(normalized)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                    raise ValueError(f"Project {field} must be a valid HTTP or HTTPS URL.")
+                project[field] = normalized
+        return data
 
 class ResumeConfirmRequest(BaseModel):
     apply_to_profile: bool = True

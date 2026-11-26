@@ -2,7 +2,7 @@ from typing import List, Optional
 import datetime
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc
+from sqlalchemy import or_, desc, func
 
 from app.database.session import get_db
 from app.core.dependencies import get_current_admin
@@ -22,8 +22,18 @@ from app.schemas.admin import (
 )
 from app.schemas.recruiter import RecruiterVerificationAction
 from app.services.export_service import ExportService
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/admin", tags=["Admin Administration"])
+
+class JobRejectRequest(BaseModel):
+    notes: str = Field(..., min_length=5)
+
+
+class JobModerationRequest(BaseModel):
+    """Request body for the generic job moderation endpoint."""
+    new_status: JobStatusEnum
+    notes: Optional[str] = None
 
 # User Management
 @router.get("/users", response_model=List[UserAdminView])
@@ -163,40 +173,15 @@ def verify_recruiter(
     return {"message": f"Recruiter status updated to {req.approval_status.value}"}
 
 # Job Moderation
-@router.get("/jobs")
-def get_all_jobs_moderation(
-    status: Optional[JobStatusEnum] = Query(None),
-    admin_user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """View all platform job postings for moderation."""
-    query = db.query(Job)
-    if status:
-        query = query.filter(Job.status == status)
-    jobs = query.order_by(Job.created_at.desc()).all()
-    results = []
-    for j in jobs:
-        results.append({
-            "id": j.id,
-            "title": j.title,
-            "company_name": j.company.name if j.company else "",
-            "location": j.location,
-            "employment_type": j.employment_type,
-            "status": j.status,
-            "moderation_notes": j.moderation_notes,
-            "created_at": j.created_at
-        })
-    return results
 
-@router.put("/jobs/{job_id}/moderate")
-def moderate_job(
+def _moderate_job_logic(
     job_id: int,
     new_status: JobStatusEnum,
-    notes: Optional[str] = None,
-    admin_user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    notes: Optional[str],
+    admin_user: User,
+    db: Session,
 ):
-    """Approve, reject, or close a job and notify its recruiter."""
+    """Core moderation logic shared by all job moderation endpoints."""
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise NotFoundException("Job")
@@ -206,7 +191,9 @@ def moderate_job(
             "An administrator cannot move a job back to pending moderation."
         )
 
-    if new_status == JobStatusEnum.MODERATION_REJECTED and not (notes and notes.strip()):
+    if new_status == JobStatusEnum.MODERATION_REJECTED and not (
+        notes and notes.strip()
+    ):
         raise BadRequestException(
             "A rejection reason is required when rejecting a job."
         )
@@ -215,14 +202,19 @@ def moderate_job(
     job.status = new_status
     job.moderation_notes = notes.strip() if notes else None
 
-    recruiter = db.query(Recruiter).filter(
-        Recruiter.id == job.recruiter_id
-    ).first()
+    recruiter = (
+        db.query(Recruiter)
+        .filter(Recruiter.id == job.recruiter_id)
+        .first()
+    )
 
     if recruiter:
         if new_status == JobStatusEnum.PUBLISHED:
             title = "Job Approved"
-            message = f"Your job posting '{job.title}' has been approved and is now published."
+            message = (
+                f"Your job posting '{job.title}' has been approved "
+                "and is now published."
+            )
         elif new_status == JobStatusEnum.MODERATION_REJECTED:
             title = "Job Rejected"
             message = (
@@ -231,15 +223,20 @@ def moderate_job(
             )
         else:
             title = "Job Status Updated"
-            message = f"Your job posting '{job.title}' status is now {new_status.value}."
+            message = (
+                f"Your job posting '{job.title}' status is now "
+                f"{new_status.value}."
+            )
 
-        db.add(Notification(
-            user_id=recruiter.user_id,
-            title=title,
-            message=message,
-            type="ALERT",
-            link="/recruiter/jobs"
-        ))
+        db.add(
+            Notification(
+                user_id=recruiter.user_id,
+                title=title,
+                message=message,
+                type="ALERT",
+                link="/recruiter/jobs",
+            )
+        )
 
     audit = AuditLog(
         user_id=admin_user.id,
@@ -251,10 +248,21 @@ def moderate_job(
             "new_status": new_status.value,
             "notes": job.moderation_notes,
             "recruiter_user_id": recruiter.user_id if recruiter else None,
-        }
+        },
     )
     db.add(audit)
     db.commit()
+
+    # If job has been approved/published, dispatch matching candidate job alerts safely
+    alerts_dispatched = 0
+    if new_status == JobStatusEnum.PUBLISHED:
+        try:
+            from app.services.job_alert_service import JobAlertService
+            alert_res = JobAlertService.dispatch_job_alerts(db, job)
+            alerts_dispatched = alert_res.get("dispatched", 0)
+        except Exception as e:
+            import logging
+            logging.getLogger("SkillSphere").exception(f"Error during job alert dispatch: {e}")
 
     return {
         "message": f"Job status updated to {new_status.value}",
@@ -262,7 +270,90 @@ def moderate_job(
         "previous_status": previous_status.value,
         "new_status": new_status.value,
         "notification_sent": recruiter is not None,
+        "job_alerts_dispatched": alerts_dispatched,
     }
+
+
+@router.post("/jobs/{job_id}/approve")
+def approve_job(
+    job_id: int,
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only endpoint to approve a job."""
+    return _moderate_job_logic(
+        job_id,
+        JobStatusEnum.PUBLISHED,
+        None,
+        admin_user,
+        db,
+    )
+
+
+@router.post("/jobs/{job_id}/reject")
+def reject_job(
+    job_id: int,
+    req: JobRejectRequest,
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only endpoint to reject a job with a reason."""
+    return _moderate_job_logic(
+        job_id,
+        JobStatusEnum.MODERATION_REJECTED,
+        req.notes,
+        admin_user,
+        db,
+    )
+
+
+@router.get("/jobs")
+def get_all_jobs_moderation(
+    status: Optional[JobStatusEnum] = Query(None),
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """View all platform job postings for moderation."""
+    query = db.query(Job)
+    if status:
+        query = query.filter(Job.status == status)
+
+    jobs = query.order_by(Job.created_at.desc()).all()
+    results = []
+
+    for j in jobs:
+        results.append(
+            {
+                "id": j.id,
+                "title": j.title,
+                "company_name": j.company.name if j.company else "",
+                "location": j.location,
+                "employment_type": j.employment_type,
+                "status": j.status,
+                "moderation_notes": j.moderation_notes,
+                "created_at": j.created_at,
+            }
+        )
+
+    return results
+
+
+@router.put("/jobs/{job_id}/moderate")
+def moderate_job(
+    job_id: int,
+    req: JobModerationRequest,
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Legacy moderation endpoint; accepts a JSON body and delegates to shared logic."""
+    return _moderate_job_logic(
+        job_id,
+        req.new_status,
+        req.notes,
+        admin_user,
+        db,
+    )
+
 
 # Platform Analytics
 @router.get("/analytics", response_model=PlatformAnalyticsResponse)
@@ -296,7 +387,30 @@ def get_audit_logs(
     db: Session = Depends(get_db)
 ):
     """Maintain activity records for compliance and platform security."""
-    logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all()
+    assessment_audit_entities = (
+        "assessment",
+        "assessment_assignment",
+        "assessment_result",
+        "assessment_recording",
+        "proctoring",
+        "proctoring_recording",
+        "question_bank",
+        "question_bank_question",
+    )
+    logs = (
+        db.query(AuditLog)
+        .filter(
+            ~func.lower(func.coalesce(AuditLog.entity_type, "")).in_(
+                assessment_audit_entities
+            ),
+            ~func.upper(AuditLog.action).like("ASSESSMENT_%"),
+            ~func.upper(AuditLog.action).like("PROCTORING_%"),
+            ~func.upper(AuditLog.action).like("QUESTION_BANK_%"),
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
     results = []
     for l in logs:
         results.append({

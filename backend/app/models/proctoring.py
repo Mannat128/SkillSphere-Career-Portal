@@ -49,6 +49,7 @@ class ProctoringSession(Base):
         default=False,
         nullable=False,
     )
+    microphone_permission_granted = Column(Boolean, default=False, nullable=False)
 
     # Session state
     session_status = Column(
@@ -60,13 +61,20 @@ class ProctoringSession(Base):
     # Private recording metadata
     recording_filename = Column(String(255), nullable=True)
     recording_path = Column(String(500), nullable=True)
+    recording_provider = Column(String(30), nullable=True)
+    cloudinary_asset_id = Column(String(128), nullable=True)
+    cloudinary_public_id = Column(String(255), nullable=True)
+    cloudinary_version = Column(String(50), nullable=True)
+    cloudinary_format = Column(String(20), nullable=True)
+    cloudinary_resource_type = Column(String(20), nullable=True)
+    cloudinary_delivery_type = Column(String(30), nullable=True)
     recording_mime_type = Column(String(100), nullable=True)
     recording_size_bytes = Column(BigInteger, nullable=True)
 
     recording_started_at = Column(DateTime, nullable=True)
     recording_completed_at = Column(DateTime, nullable=True)
 
-    # Automatic deletion after 30 days
+    # Automatic deletion after configured retention (15 days by default)
     delete_after = Column(DateTime, nullable=True)
     recording_deleted_at = Column(DateTime, nullable=True)
 

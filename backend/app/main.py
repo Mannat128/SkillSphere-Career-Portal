@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import os
@@ -32,16 +33,21 @@ from app.routers import (
     assessment_reviews,
     proctoring,
     support_tickets,
-    support_ticket_admin,  # NEW: Admin Ticket Assignment & Priority
+    support_ticket_admin,
     computer_vision,
-    sphera_ai,
+    assistant,
+    recruiter_ai,
 )
-
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# HTTPX INFO records include complete request URLs. Some providers place
+# signatures/API identifiers in query parameters, so keep request URLs out of
+# application logs. Provider-specific service code emits sanitized status logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("SkillSphere")
 
@@ -80,7 +86,7 @@ app = FastAPI(
     description=(
         "Full-stack Career & Job Portal REST API with Resume OCR, "
         "AI Matching, Recruitment Analytics, AI Proctoring "
-        "and Sphera AI Support Assistant."
+        "and the SkillSphere Assistant."
     ),
     version="1.0.0",
     docs_url="/docs",
@@ -88,8 +94,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+
+# Ensure private directories (recordings and support attachments) are safely created
+PRIVATE_RECORDING_DIR = (
+    os.path.join(os.path.dirname(os.path.abspath(settings.UPLOAD_DIR)), "private_proctoring_recordings")
+)
+SUPPORT_ATTACHMENT_DIR = (
+    os.path.join(os.path.dirname(os.path.abspath(settings.UPLOAD_DIR)), "private_support_attachments")
+)
+os.makedirs(PRIVATE_RECORDING_DIR, exist_ok=True)
+os.makedirs(SUPPORT_ATTACHMENT_DIR, exist_ok=True)
 
 app.mount(
     "/uploads",
@@ -97,22 +112,18 @@ app.mount(
     name="uploads",
 )
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Token-Invalid"],
 )
-
 
 api_v1 = settings.API_V1_PREFIX
 
-
-# ---------------------------------------------------------
 # EXISTING APPLICATION ROUTERS
-# ---------------------------------------------------------
 
 app.include_router(auth.router, prefix=api_v1)
 app.include_router(candidate.router, prefix=api_v1)
@@ -127,10 +138,7 @@ app.include_router(admin.router, prefix=api_v1)
 app.include_router(notifications.router, prefix=api_v1)
 app.include_router(question_bank.router, prefix=api_v1)
 
-
-# ---------------------------------------------------------
 # RECRUITER AND CANDIDATE ASSESSMENTS
-# ---------------------------------------------------------
 
 app.include_router(
     recruiter_assessments.router,
@@ -142,20 +150,14 @@ app.include_router(
     prefix=api_v1,
 )
 
-
-# ---------------------------------------------------------
 # MANUAL RECRUITER ASSESSMENT REVIEW
-# ---------------------------------------------------------
 
 app.include_router(
     assessment_reviews.router,
     prefix=api_v1,
 )
 
-
-# ---------------------------------------------------------
 # PROCTORING AND COMPUTER VISION
-# ---------------------------------------------------------
 
 app.include_router(
     proctoring.router,
@@ -172,45 +174,33 @@ app.include_router(
     prefix=api_v1,
 )
 
-app.include_router(
-    proctoring.admin_router,
-    prefix=api_v1,
-)
-
-
-# ---------------------------------------------------------
 # SUPPORT TICKET SYSTEM
-# ---------------------------------------------------------
 
 app.include_router(
     support_tickets.router,
     prefix=api_v1,
 )
 
-
-# ---------------------------------------------------------
 # ADMIN SUPPORT TICKET MANAGEMENT
-# ---------------------------------------------------------
 
 app.include_router(
     support_ticket_admin.router,
     prefix=api_v1,
 )
 
-
-# ---------------------------------------------------------
-# SPHERA AI SUPPORT ASSISTANT
-# ---------------------------------------------------------
+# LOCAL SKILLSPHERE ASSISTANT AND SEPARATE RECRUITER AI TOOLS
 
 app.include_router(
-    sphera_ai.router,
+    assistant.router,
     prefix=api_v1,
 )
 
+app.include_router(
+    recruiter_ai.router,
+    prefix=api_v1,
+)
 
-# ---------------------------------------------------------
 # ROOT / HEALTH ENDPOINTS
-# ---------------------------------------------------------
 
 @app.get("/", tags=["Health"])
 def root():

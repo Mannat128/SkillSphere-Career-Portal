@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, desc
 
 from app.database.session import get_db
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_role
 from app.core.exceptions import (
     NotFoundException,
     BadRequestException,
@@ -32,7 +32,8 @@ from app.schemas.recruiter_assessment import (
 
 router = APIRouter(
     prefix="/question-bank",
-    tags=["Question Bank"]
+    tags=["Question Bank"],
+    dependencies=[Depends(require_role(UserRole.RECRUITER))],
 )
 
 
@@ -48,7 +49,7 @@ class AIGenerateRequest(BaseModel):
         "Scenario-based",
     ] = "Mixed"
     provider: Optional[
-        Literal["google_gemini", "gemini", "openai"]
+        Literal["google_gemini", "gemini"]
     ] = None
 
 
@@ -60,7 +61,7 @@ class AIGeneratedQuestionSaveRequest(BaseModel):
 
 def get_recruiter_profile(current_user: User, db: Session):
     if current_user.role != UserRole.RECRUITER:
-        return None
+        raise ForbiddenException("Only recruiters can access the Question Bank.")
 
     recruiter = db.query(Recruiter).filter(
         Recruiter.user_id == current_user.id
@@ -96,16 +97,15 @@ def is_near_duplicate(candidate: str, existing_texts: set, threshold: float = 0.
 
 
 def get_existing_question_texts(db: Session, current_user: User):
+    recruiter = get_recruiter_profile(current_user, db)
     query = db.query(QuestionBankQuestion.question_text)
 
-    if current_user.role == UserRole.RECRUITER:
-        recruiter = get_recruiter_profile(current_user, db)
-        query = query.filter(
-            or_(
-                QuestionBankQuestion.is_shared == True,
-                QuestionBankQuestion.recruiter_id == recruiter.id
-            )
+    query = query.filter(
+        or_(
+            QuestionBankQuestion.is_shared == True,
+            QuestionBankQuestion.recruiter_id == recruiter.id
         )
+    )
 
     return {
         item[0].strip()
@@ -122,13 +122,7 @@ def generate_ai_questions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role not in [
-        UserRole.RECRUITER,
-        UserRole.ADMIN
-    ]:
-        raise ForbiddenException(
-            "Only recruiters and admins can generate questions."
-        )
+    get_recruiter_profile(current_user, db)
 
     generated = AIService.generate_mcq_questions(
         topic=req.topic,
@@ -179,30 +173,20 @@ def save_reviewed_ai_questions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Persist recruiter/admin-reviewed AI questions; generation itself never saves."""
-    if current_user.role not in [UserRole.RECRUITER, UserRole.ADMIN]:
-        raise ForbiddenException("Only recruiters and admins can save questions.")
-
+    """Persist recruiter-reviewed questions; generation itself never saves."""
     recruiter = get_recruiter_profile(current_user, db)
-
-    if current_user.role == UserRole.ADMIN:
-        if not req.save_to_bank:
-            raise BadRequestException("Admin can only save questions to the shared question bank.")
-        target_job_id = None
-        is_shared = True
-    else:
-        is_shared = False
-        target_job_id = None if req.save_to_bank else req.job_id
-        if not req.save_to_bank:
-            if not req.job_id:
-                raise BadRequestException("Please select a job for these questions.")
-            from app.models.job import Job
-            owned_job = db.query(Job).filter(
-                Job.id == req.job_id,
-                Job.recruiter_id == recruiter.id
-            ).first()
-            if not owned_job:
-                raise ForbiddenException("You can only add questions to your own jobs.")
+    is_shared = False
+    target_job_id = None if req.save_to_bank else req.job_id
+    if not req.save_to_bank:
+        if not req.job_id:
+            raise BadRequestException("Please select a job for these questions.")
+        from app.models.job import Job
+        owned_job = db.query(Job).filter(
+            Job.id == req.job_id,
+            Job.recruiter_id == recruiter.id
+        ).first()
+        if not owned_job:
+            raise ForbiddenException("You can only add questions to your own jobs.")
 
     existing_texts = get_existing_question_texts(db, current_user)
     batch_texts = set()
@@ -255,81 +239,56 @@ def get_question_bank(
 ):
     recruiter = get_recruiter_profile(current_user, db)
     query = db.query(QuestionBankQuestion)
+    recruiter_id = recruiter.id
 
-    if current_user.role == UserRole.ADMIN:
-        if source == "shared":
-            query = query.filter(
-                QuestionBankQuestion.is_shared == True
-            )
-        elif source == "mine":
-            query = query.filter(
-                QuestionBankQuestion.created_by_id == current_user.id
-            )
-        elif source == "job" and job_id:
-            query = query.filter(
-                QuestionBankQuestion.job_id == job_id
-            )
-        elif source == "all":
-            query = query.filter(
-                QuestionBankQuestion.is_shared == True
-            )
+    if source == "mine":
+        query = query.filter(
+            QuestionBankQuestion.recruiter_id == recruiter_id,
+            QuestionBankQuestion.job_id.is_(None)
+        )
 
-    elif current_user.role == UserRole.RECRUITER:
-        recruiter_id = recruiter.id
+    elif source == "shared":
+        query = query.filter(QuestionBankQuestion.is_shared == True)
 
-        if source == "mine":
-            query = query.filter(
-                QuestionBankQuestion.recruiter_id == recruiter_id,
-                QuestionBankQuestion.job_id.is_(None)
-            )
+    elif source == "job":
+        if not job_id:
+            return []
 
-        elif source == "shared":
-            query = query.filter(
-                QuestionBankQuestion.is_shared == True
-            )
+        query = query.filter(
+            QuestionBankQuestion.job_id == job_id,
+            QuestionBankQuestion.recruiter_id == recruiter_id
+        )
 
-        elif source == "job":
-            if not job_id:
-                return []
-
-            query = query.filter(
+    elif job_id:
+        query = query.filter(
+            or_(
                 QuestionBankQuestion.job_id == job_id,
-                QuestionBankQuestion.recruiter_id == recruiter_id
-            )
-
-        elif job_id:
-            query = query.filter(
-                or_(
-                    QuestionBankQuestion.job_id == job_id,
-                    and_(
-                        QuestionBankQuestion.job_id.is_(None),
-                        or_(
-                            QuestionBankQuestion.is_shared == True,
-                            QuestionBankQuestion.recruiter_id == recruiter_id
-                        )
+                and_(
+                    QuestionBankQuestion.job_id.is_(None),
+                    or_(
+                        QuestionBankQuestion.is_shared == True,
+                        QuestionBankQuestion.recruiter_id == recruiter_id
                     )
                 )
             )
+        )
 
-        elif include_job_specific:
-            query = query.filter(
-                or_(
-                    QuestionBankQuestion.is_shared == True,
-                    QuestionBankQuestion.recruiter_id == recruiter_id
-                )
+    elif include_job_specific:
+        query = query.filter(
+            or_(
+                QuestionBankQuestion.is_shared == True,
+                QuestionBankQuestion.recruiter_id == recruiter_id
             )
-
-        else:
-            query = query.filter(
-                QuestionBankQuestion.job_id.is_(None),
-                or_(
-                    QuestionBankQuestion.is_shared == True,
-                    QuestionBankQuestion.recruiter_id == recruiter_id
-                )
-            )
+        )
 
     else:
-        raise ForbiddenException("Access denied.")
+        query = query.filter(
+            QuestionBankQuestion.job_id.is_(None),
+            or_(
+                QuestionBankQuestion.is_shared == True,
+                QuestionBankQuestion.recruiter_id == recruiter_id
+            )
+        )
 
     if category and category.strip():
         query = query.filter(
@@ -362,24 +321,13 @@ def get_categories(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(QuestionBankQuestion.category)
-
-    if current_user.role == UserRole.ADMIN:
-        query = query.filter(
-            QuestionBankQuestion.is_shared == True
+    recruiter = get_recruiter_profile(current_user, db)
+    query = db.query(QuestionBankQuestion.category).filter(
+        or_(
+            QuestionBankQuestion.is_shared == True,
+            QuestionBankQuestion.recruiter_id == recruiter.id
         )
-
-    elif current_user.role == UserRole.RECRUITER:
-        recruiter = get_recruiter_profile(current_user, db)
-        query = query.filter(
-            or_(
-                QuestionBankQuestion.is_shared == True,
-                QuestionBankQuestion.recruiter_id == recruiter.id
-            )
-        )
-
-    else:
-        raise ForbiddenException("Access denied.")
+    )
 
     categories = query.distinct().all()
 
@@ -402,41 +350,20 @@ def add_question_manually(
 ):
     recruiter = get_recruiter_profile(current_user, db)
 
-    if current_user.role == UserRole.ADMIN:
-        if not req.save_to_bank:
-            raise BadRequestException(
-                "Admin can only add questions to the shared question bank."
-            )
+    is_shared = False
+    target_job_id = req.job_id if not req.save_to_bank and req.job_id else None
 
-        is_shared = True
-        target_job_id = None
+    if not req.save_to_bank and not req.job_id:
+        raise BadRequestException("Please select a job for this question.")
 
-    elif current_user.role == UserRole.RECRUITER:
-        is_shared = False
-        target_job_id = (
-            req.job_id
-            if not req.save_to_bank and req.job_id
-            else None
-        )
-
-        if not req.save_to_bank and not req.job_id:
-            raise BadRequestException(
-                "Please select a job for this question."
-            )
-
-        if not req.save_to_bank:
-            from app.models.job import Job
-            owned_job = db.query(Job).filter(
-                Job.id == req.job_id,
-                Job.recruiter_id == recruiter.id
-            ).first()
-            if not owned_job:
-                raise ForbiddenException(
-                    "You can only add questions to your own jobs."
-                )
-
-    else:
-        raise ForbiddenException("Access denied.")
+    if not req.save_to_bank:
+        from app.models.job import Job
+        owned_job = db.query(Job).filter(
+            Job.id == req.job_id,
+            Job.recruiter_id == recruiter.id
+        ).first()
+        if not owned_job:
+            raise ForbiddenException("You can only add questions to your own jobs.")
 
     question = QuestionBankQuestion(
         recruiter_id=recruiter.id if recruiter else None,
@@ -644,11 +571,7 @@ async def preview_bulk_upload(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if current_user.role not in [
-        UserRole.ADMIN,
-        UserRole.RECRUITER
-    ]:
-        raise ForbiddenException("Access denied.")
+    get_recruiter_profile(current_user, db)
 
     if not file.filename:
         raise BadRequestException("No file provided.")
@@ -692,12 +615,6 @@ async def bulk_upload_questions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if current_user.role not in [
-        UserRole.ADMIN,
-        UserRole.RECRUITER
-    ]:
-        raise ForbiddenException("Access denied.")
-
     recruiter = get_recruiter_profile(current_user, db)
 
     if not file.filename:
@@ -708,12 +625,7 @@ async def bulk_upload_questions(
     if not (filename.endswith(".csv") or filename.endswith(".xlsx")):
         raise BadRequestException("Upload a CSV or XLSX file.")
 
-    if current_user.role == UserRole.ADMIN and not save_to_bank:
-        raise BadRequestException(
-            "Admin can only import into the shared question bank."
-        )
-
-    if current_user.role == UserRole.RECRUITER and not save_to_bank:
+    if not save_to_bank:
         if not job_id:
             raise BadRequestException("Please select a job.")
 
@@ -754,14 +666,8 @@ async def bulk_upload_questions(
             "errors": errors
         }
 
-    target_job_id = (
-        job_id
-        if current_user.role == UserRole.RECRUITER
-        and not save_to_bank
-        else None
-    )
-
-    shared_value = current_user.role == UserRole.ADMIN
+    target_job_id = job_id if not save_to_bank else None
+    shared_value = False
 
     entities = [
         QuestionBankQuestion(
@@ -814,24 +720,17 @@ def get_question(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    recruiter = get_recruiter_profile(current_user, db)
     question = db.query(QuestionBankQuestion).filter(
-        QuestionBankQuestion.id == question_id
+        QuestionBankQuestion.id == question_id,
+        or_(
+            QuestionBankQuestion.is_shared == True,
+            QuestionBankQuestion.recruiter_id == recruiter.id,
+        ),
     ).first()
 
     if not question:
         raise NotFoundException("Question")
-
-    if current_user.role == UserRole.RECRUITER:
-        recruiter = get_recruiter_profile(current_user, db)
-
-        if not (
-            question.is_shared
-            or question.recruiter_id == recruiter.id
-        ):
-            raise ForbiddenException("Access denied.")
-
-    elif current_user.role != UserRole.ADMIN:
-        raise ForbiddenException("Access denied.")
 
     return question
 
@@ -845,26 +744,15 @@ def update_question(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    recruiter = get_recruiter_profile(current_user, db)
     question = db.query(QuestionBankQuestion).filter(
-        QuestionBankQuestion.id == question_id
+        QuestionBankQuestion.id == question_id,
+        QuestionBankQuestion.recruiter_id == recruiter.id,
+        QuestionBankQuestion.is_shared == False,
     ).first()
 
     if not question:
         raise NotFoundException("Question")
-
-    if current_user.role == UserRole.RECRUITER:
-        recruiter = get_recruiter_profile(current_user, db)
-
-        if (
-            question.recruiter_id != recruiter.id
-            or question.is_shared
-        ):
-            raise ForbiddenException(
-                "You can only edit your own private questions."
-            )
-
-    elif current_user.role != UserRole.ADMIN:
-        raise ForbiddenException("Access denied.")
 
     fields = [
         "question_text",
@@ -908,26 +796,15 @@ def delete_question(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    recruiter = get_recruiter_profile(current_user, db)
     question = db.query(QuestionBankQuestion).filter(
-        QuestionBankQuestion.id == question_id
+        QuestionBankQuestion.id == question_id,
+        QuestionBankQuestion.recruiter_id == recruiter.id,
+        QuestionBankQuestion.is_shared == False,
     ).first()
 
     if not question:
         raise NotFoundException("Question")
-
-    if current_user.role == UserRole.RECRUITER:
-        recruiter = get_recruiter_profile(current_user, db)
-
-        if (
-            question.recruiter_id != recruiter.id
-            or question.is_shared
-        ):
-            raise ForbiddenException(
-                "You can only delete your own private questions."
-            )
-
-    elif current_user.role != UserRole.ADMIN:
-        raise ForbiddenException("Access denied.")
 
     db.delete(question)
     db.commit()

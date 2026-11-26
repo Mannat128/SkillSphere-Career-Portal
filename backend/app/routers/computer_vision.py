@@ -249,7 +249,7 @@ async def analyze_proctoring_frame(
                 for violation_type in detected_violations:
                     violation_record = ProctoringViolation(
                         proctoring_session_id=session.id,
-                        assignment_id=assignment.id,
+                        assignment_id=assignment_id,
                         candidate_id=candidate.id,
                         violation_type=violation_type,
                         confidence=get_violation_confidence(
@@ -295,10 +295,16 @@ async def analyze_proctoring_frame(
         return {
             "message": "Frame analysed successfully.",
             "assignment_id": assignment_id,
-            "phone_detected": bool(result.get("phone_detected")),
-            "person_count": result.get("person_count", 0),
-            "multiple_people_detected": bool(
-                result.get("multiple_people_detected")
+            "phone_detected": result.get("phone_detected"),
+            "person_count": result.get("person_count"),
+            "multiple_people_detected": result.get("multiple_people_detected"),
+            "object_detection_available": bool(
+                result.get("object_detection_available", True)
+            ),
+            "face_detected": bool(result.get("face_detected")),
+            "face_count": int(result.get("face_count", 0) or 0),
+            "looking_away_detected": bool(
+                result.get("looking_away_detected")
             ),
             "detected_violations": detected_violations,
             "warning_recorded": warning_recorded,

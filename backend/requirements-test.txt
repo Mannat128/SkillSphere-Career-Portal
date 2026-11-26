@@ -1,0 +1,6 @@
+# Test-only dependencies. Install after the main backend requirements.
+-r requirements.txt
+
+# Starlette's TestClient can use AnyIO's Trio backend on Windows to avoid
+# Python asyncio Proactor socket-pair initialization in restricted runners.
+trio>=0.30,<1

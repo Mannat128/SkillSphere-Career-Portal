@@ -1,426 +1,162 @@
-
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download, FileText } from 'lucide-react';
+import { ArrowDown, ArrowUp, Download, Eye, FileText, Palette, RotateCcw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
+import './ResumeBuilder.css';
 
-const sectionStyle = {
-  marginBottom: '24px',
-};
+const TEMPLATES = [
+  { id: 'classic_ats', name: 'Classic ATS', note: 'Clean, single-column and easy for applicant tracking systems.' },
+  { id: 'modern_professional', name: 'Modern Professional', note: 'Strong hierarchy with a restrained accent color.' },
+  { id: 'minimalist', name: 'Minimalist', note: 'Light typography and generous white space.' },
+  { id: 'two_column', name: 'Two Column', note: 'Contact and skills in a compact side rail.' },
+  { id: 'executive', name: 'Executive', note: 'Confident header and concise leadership sections.' },
+  { id: 'fresh_graduate', name: 'Fresh Graduate', note: 'Education, projects and skills are easy to find.' },
+];
 
-const headingStyle = {
-  fontSize: '1rem',
-  fontWeight: 800,
-  borderBottom: '1px solid #CBD5E1',
-  paddingBottom: '5px',
-  marginBottom: '10px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.5px',
+const SECTION_LABELS = {
+  summary: 'Professional Summary',
+  skills: 'Skills',
+  experience: 'Experience',
+  projects: 'Projects',
+  education: 'Education',
+  certifications: 'Certifications',
+  links: 'Professional Links',
 };
+const DEFAULT_ORDER = Object.keys(SECTION_LABELS);
+const FONT_OPTIONS = ['Arial', 'Calibri', 'Georgia', 'Garamond', 'Helvetica'];
+const PREFS_KEY = 'skillsphere_resume_builder_preferences';
+const getText = (value) => (value === null || value === undefined ? '' : String(value));
 
-const textStyle = {
-  fontSize: '0.9rem',
-  color: '#334155',
-  whiteSpace: 'pre-wrap',
-  overflowWrap: 'anywhere',
-};
-
-const getText = (value) => {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
-  return '';
-};
-
-const formatDate = (value) => {
-  if (!value) return '';
-  return getText(value);
-};
+function MiniPreview({ templateId }) {
+  return <div className={`resume-mini resume-mini-${templateId}`} aria-hidden="true">
+    <i /><b /><b /><span /><span /><span /><em /><span /><span />
+  </div>;
+}
 
 export default function ResumeBuilder() {
   const { user } = useAuth();
-
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [message, setMessage] = useState('');
+  const [preferences, setPreferences] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+      return {
+        template: TEMPLATES.some((item) => item.id === saved.template) ? saved.template : 'classic_ats',
+        accent: /^#[0-9A-Fa-f]{6}$/.test(saved.accent || '') ? saved.accent : '#5B7C3C',
+        font: FONT_OPTIONS.includes(saved.font) ? saved.font : 'Arial',
+        spacing: Number.isFinite(saved.spacing) ? Math.min(1.2, Math.max(0.75, saved.spacing)) : 1,
+        order: Array.isArray(saved.order) && saved.order.length === DEFAULT_ORDER.length ? saved.order : DEFAULT_ORDER,
+        visible: Array.isArray(saved.visible) ? saved.visible : DEFAULT_ORDER,
+      };
+    } catch {
+      return { template: 'classic_ats', accent: '#5B7C3C', font: 'Arial', spacing: 1, order: DEFAULT_ORDER, visible: DEFAULT_ORDER };
+    }
+  });
 
-  useEffect(() => {
-    fetchProfile();
-  }, []);
+  useEffect(() => { fetchProfile(); }, []);
+  useEffect(() => { localStorage.setItem(PREFS_KEY, JSON.stringify(preferences)); }, [preferences]);
 
   const fetchProfile = async () => {
     setLoading(true);
-
     try {
-      const res = await api.get('/candidate/profile');
-      setProfile(res.data || {});
+      const response = await api.get('/candidate/profile');
+      setProfile(response.data || {});
     } catch (error) {
-      console.error('Resume profile loading failed:', error);
-      alert(
-        error.response?.data?.detail ||
-        'Unable to load candidate profile.'
-      );
+      setMessage(error.response?.data?.detail || 'Unable to load candidate profile.');
     } finally {
       setLoading(false);
     }
   };
 
-  const skills = useMemo(() => {
-    return (profile?.skills || [])
-      .map((skill) => ({
-        name: getText(skill?.name || skill?.skill_name || skill?.skill?.name || skill),
-        proficiency: getText(skill?.proficiency),
-      }))
-      .filter((skill) => skill.name);
-  }, [profile]);
+  const skills = useMemo(() => (profile?.skills || [])
+    .map((skill) => ({ name: getText(skill?.name || skill?.skill_name || skill?.skill?.name || skill), proficiency: getText(skill?.proficiency) }))
+    .filter((skill) => skill.name), [profile]);
 
-  const experiences = profile?.experiences || [];
-  const educations = profile?.educations || [];
-  const projects = profile?.projects || [];
-  const certifications = profile?.certifications || [];
+  const update = (key, value) => setPreferences((previous) => ({ ...previous, [key]: value }));
+  const moveSection = (index, direction) => {
+    setPreferences((previous) => {
+      const next = [...previous.order];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return previous;
+      [next[index], next[target]] = [next[target], next[index]];
+      return { ...previous, order: next };
+    });
+  };
 
-  const handleDownloadPdf = async () => {
+  const handleDownload = async () => {
     setGenerating(true);
-
+    setMessage('');
     try {
-      const res = await api.get('/candidate/resume-builder/pdf', {
+      const response = await api.get('/candidate/resume-builder/pdf', {
         responseType: 'blob',
+        params: {
+          template: preferences.template,
+          accent: preferences.accent,
+          font: preferences.font,
+          spacing: preferences.spacing,
+          sections: preferences.order.filter((section) => preferences.visible.includes(section)).join(','),
+        },
       });
-
-      const blob = new Blob([res.data], {
-        type: 'application/pdf',
-      });
-
-      const url = window.URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
-
       link.href = url;
       link.download = `${user?.full_name || 'Candidate'}_Resume.pdf`;
-
       document.body.appendChild(link);
       link.click();
       link.remove();
-
-      window.URL.revokeObjectURL(url);
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+      setMessage('PDF download started.');
     } catch (error) {
-      console.error('PDF generation failed:', error);
-      alert('Failed to generate PDF resume. Please try again.');
+      setMessage(error.response?.data?.detail || 'PDF generation failed. Please try again.');
     } finally {
       setGenerating(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div style={{ padding: 50, textAlign: 'center' }}>
-        Loading resume data...
-      </div>
-    );
-  }
+  const fullName = getText(profile?.full_name || user?.full_name) || 'Name not provided';
+  const email = getText(profile?.contact_email || profile?.email || user?.email);
+  const contactItems = [email, profile?.phone, profile?.location].filter(Boolean);
+  const links = [
+    ['LinkedIn', profile?.linkedin_url], ['GitHub', profile?.github_url],
+    ['Portfolio', profile?.portfolio_url], ['Professional link', profile?.additional_url],
+  ].filter((item) => item[1]);
+  const visibleSections = preferences.order.filter((key) => preferences.visible.includes(key));
+  const styleVars = { '--resume-accent': preferences.accent, '--resume-font': preferences.font, '--resume-spacing': preferences.spacing };
 
-  const fullName = getText(user?.full_name) || 'Name not provided';
-  const email = getText(user?.email);
-  const contact = [
-    email,
-    getText(profile?.phone),
-    getText(profile?.location),
-  ].filter(Boolean);
+  const renderSection = (key) => {
+    if (key === 'summary' && (profile?.bio || profile?.headline)) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2><p>{getText(profile.bio || profile.headline)}</p></section>;
+    if (key === 'skills' && skills.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2><div className="resume-skill-list">{skills.map((skill, index) => <span key={`${skill.name}-${index}`}>{skill.name}{skill.proficiency ? ` · ${skill.proficiency}` : ''}</span>)}</div></section>;
+    if (key === 'experience' && profile?.experiences?.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2>{profile.experiences.map((item, index) => <article className="resume-entry" key={item.id || index}><div className="resume-entry-heading"><strong>{[item.position, item.company].filter(Boolean).join(' · ')}</strong><span>{[item.start_date, item.is_current ? 'Present' : item.end_date].filter(Boolean).join(' – ')}</span></div>{item.location && <small>{item.location}</small>}{item.description && <p>{item.description}</p>}</article>)}</section>;
+    if (key === 'projects' && profile?.projects?.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2>{profile.projects.map((item, index) => <article className="resume-entry" key={item.id || index}><div className="resume-entry-heading"><strong>{item.title}</strong><span>{[item.start_date, item.end_date].filter(Boolean).join(' – ')}</span></div>{item.description && <p>{item.description}</p>}{item.technologies && <small>Technologies: {item.technologies}</small>}<div className="resume-link-list">{item.project_url && <a href={item.project_url} target="_blank" rel="noreferrer">Live project</a>}{item.github_url && <a href={item.github_url} target="_blank" rel="noreferrer">GitHub repository</a>}</div>{item.image_url && <img className="resume-project-image" src={item.image_url} alt={`${item.title} project`} loading="lazy" />}</article>)}</section>;
+    if (key === 'education' && profile?.educations?.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2>{profile.educations.map((item, index) => <article className="resume-entry" key={item.id || index}><div className="resume-entry-heading"><strong>{item.degree}{item.field_of_study ? ` · ${item.field_of_study}` : ''}</strong><span>{item.graduation_year}</span></div><small>{item.institution}</small>{item.grade && <p>{item.grade}</p>}</article>)}</section>;
+    if (key === 'certifications' && profile?.certifications?.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2>{profile.certifications.map((item, index) => <article className="resume-entry" key={item.id || index}><div className="resume-entry-heading"><strong>{item.name}</strong><span>{item.issue_date}</span></div><small>{item.issuing_organization}</small>{item.credential_url && <a href={item.credential_url} target="_blank" rel="noreferrer">View credential</a>}</article>)}</section>;
+    if (key === 'links' && links.length) return <section className="resume-section" key={key}><h2>{SECTION_LABELS[key]}</h2><div className="resume-link-list">{links.map(([label, url]) => <a key={label} href={url} target="_blank" rel="noreferrer">{label}: {url}</a>)}</div></section>;
+    return null;
+  };
 
-  const summary = getText(profile?.bio);
-  const headline = getText(profile?.headline);
+  if (loading) return <div className="resume-builder-loading">Loading resume data…</div>;
 
-  const hasContent =
-    summary ||
-    headline ||
-    skills.length ||
-    experiences.length ||
-    educations.length ||
-    projects.length ||
-    certifications.length;
+  return <div className="resume-builder-page">
+    <div className="resume-builder-heading"><div><h1>Resume Builder</h1><p>Choose a layout. Your profile details stay in one shared resume and carry across every template.</p></div><button type="button" className="resume-download-button" onClick={handleDownload} disabled={generating}><Download size={17} />{generating ? 'Preparing PDF…' : 'Download PDF'}</button></div>
+    {message && <div className="resume-builder-message" role="alert">{message}</div>}
 
-  return (
-    <div style={{ maxWidth: 900, margin: '0 auto' }}>
-      <div
-        className="page-header"
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 16,
-          flexWrap: 'wrap',
-          marginBottom: 24,
-        }}
-      >
-        <div>
-          <h2 className="page-title">Resume Builder</h2>
-          <p className="page-subtitle">
-            Your resume is automatically generated from your candidate profile.
-          </p>
+    <section className="resume-template-gallery"><div className="resume-gallery-heading"><h2>Choose a template</h2><span>Classic ATS is the default recommendation.</span></div><div className="resume-template-grid">{TEMPLATES.map((template) => <button key={template.id} type="button" onClick={() => update('template', template.id)} className={`resume-template-card${preferences.template === template.id ? ' selected' : ''}`} aria-pressed={preferences.template === template.id}><MiniPreview templateId={template.id} /><span className="resume-template-title">{template.name}</span><small>{template.note}</small></button>)}</div></section>
+
+    <div className="resume-builder-workspace">
+      <aside className="resume-customization-panel"><h2><Palette size={17} /> Customize</h2><label>Accent color<input type="color" value={preferences.accent} onChange={(event) => update('accent', event.target.value)} /></label><label>Font<select value={preferences.font} onChange={(event) => update('font', event.target.value)}>{FONT_OPTIONS.map((font) => <option key={font}>{font}</option>)}</select></label><label>Spacing <input type="range" min="0.75" max="1.2" step="0.05" value={preferences.spacing} onChange={(event) => update('spacing', Number(event.target.value))} /></label>
+        <div className="resume-section-order"><strong>Sections and order</strong>{preferences.order.map((key, index) => <div key={key}><label><input type="checkbox" checked={preferences.visible.includes(key)} onChange={(event) => update('visible', event.target.checked ? [...preferences.visible, key] : preferences.visible.filter((item) => item !== key))} />{SECTION_LABELS[key]}</label><span><button type="button" aria-label={`Move ${SECTION_LABELS[key]} up`} disabled={index === 0} onClick={() => moveSection(index, -1)}><ArrowUp size={14} /></button><button type="button" aria-label={`Move ${SECTION_LABELS[key]} down`} disabled={index === preferences.order.length - 1} onClick={() => moveSection(index, 1)}><ArrowDown size={14} /></button></span></div>)}</div>
+        <button type="button" className="resume-reset-button" onClick={() => { localStorage.removeItem(PREFS_KEY); setPreferences({ template: 'classic_ats', accent: '#5B7C3C', font: 'Arial', spacing: 1, order: DEFAULT_ORDER, visible: DEFAULT_ORDER }); }}><RotateCcw size={14} /> Reset layout</button>
+      </aside>
+
+      <section className="resume-preview-area"><div className="resume-preview-heading"><h2><Eye size={16} /> Full preview</h2><span>{TEMPLATES.find((item) => item.id === preferences.template)?.name}</span></div>
+        <div className={`resume-document template-${preferences.template}`} style={styleVars}>
+          <header className="resume-document-header"><div><h1>{fullName}</h1>{profile?.headline && <p className="resume-headline">{profile.headline}</p>}</div><div className="resume-contact-items">{contactItems.map((item) => <span key={item}>{item}</span>)}</div></header>
+          {preferences.template === 'two_column' ? <div className="resume-document-columns"><aside>{visibleSections.filter((key) => ['skills', 'links', 'education'].includes(key)).map(renderSection)}</aside><main>{visibleSections.filter((key) => !['skills', 'links', 'education'].includes(key)).map(renderSection)}</main></div> : <main className="resume-document-main">{visibleSections.map(renderSection)}</main>}
+          {!visibleSections.some((key) => renderSection(key)) && <div className="resume-empty"><FileText size={28} /><p>Add profile details to build your resume. No sample information is inserted.</p></div>}
         </div>
-
-        <button
-          onClick={handleDownloadPdf}
-          disabled={generating}
-          className="btn btn-primary"
-        >
-          <Download size={18} />
-          {generating ? 'Generating PDF...' : 'Download PDF Resume'}
-        </button>
-      </div>
-
-      <div
-        className="card"
-        style={{
-          padding: '48px 56px',
-          background: '#FFFFFF',
-          boxShadow: '0 8px 30px rgba(0,0,0,0.06)',
-          borderRadius: 12,
-          fontFamily: 'serif',
-          color: '#1E293B',
-          lineHeight: 1.6,
-          overflowWrap: 'anywhere',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            textAlign: 'center',
-            borderBottom: '2px solid #0F172A',
-            paddingBottom: 16,
-            marginBottom: 24,
-          }}
-        >
-          <h1
-            style={{
-              fontSize: '2rem',
-              fontWeight: 800,
-              textTransform: 'uppercase',
-              letterSpacing: 1,
-              margin: 0,
-            }}
-          >
-            {fullName}
-          </h1>
-
-          {headline && (
-            <p
-              style={{
-                fontSize: '1rem',
-                color: '#475569',
-                marginTop: 5,
-                fontStyle: 'italic',
-              }}
-            >
-              {headline}
-            </p>
-          )}
-
-          {contact.length > 0 && (
-            <p
-              style={{
-                fontSize: '0.85rem',
-                color: '#64748B',
-                marginTop: 5,
-              }}
-            >
-              {contact.join(' • ')}
-            </p>
-          )}
-        </div>
-
-        {!hasContent && (
-          <div style={{ textAlign: 'center', padding: 25 }}>
-            <FileText size={35} />
-            <p>Your profile does not contain enough information yet.</p>
-            <p>Add skills, projects, education or certifications to build your resume.</p>
-          </div>
-        )}
-
-        {/* Professional Summary */}
-        {(summary || headline) && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Professional Summary</h3>
-            <p style={textStyle}>{summary || headline}</p>
-          </section>
-        )}
-
-        {/* Technical Skills */}
-        {skills.length > 0 && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Technical Skills</h3>
-            <p style={textStyle}>
-              {skills
-                .map((skill) =>
-                  skill.proficiency
-                    ? `${skill.name} (${skill.proficiency})`
-                    : skill.name
-                )
-                .join(' • ')}
-            </p>
-          </section>
-        )}
-
-        {/* Work Experience */}
-        {experiences.length > 0 && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Work Experience</h3>
-
-            {experiences.map((exp, index) => (
-              <div key={exp.id || index} style={{ marginBottom: 16 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <strong>
-                    {[getText(exp.position), getText(exp.company)]
-                      .filter(Boolean)
-                      .join(' — ')}
-                  </strong>
-
-                  <span style={{ fontSize: '0.82rem', color: '#64748B' }}>
-                    {formatDate(exp.start_date)}
-                    {exp.start_date || exp.end_date ? ' – ' : ''}
-                    {exp.is_current ? 'Present' : formatDate(exp.end_date)}
-                  </span>
-                </div>
-
-                {exp.location && (
-                  <p style={{ fontSize: '0.84rem', color: '#64748B' }}>
-                    {getText(exp.location)}
-                  </p>
-                )}
-
-                {exp.description && (
-                  <p style={textStyle}>{getText(exp.description)}</p>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Projects */}
-        {projects.length > 0 && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Projects</h3>
-
-            {projects.map((project, index) => (
-              <div key={project.id || index} style={{ marginBottom: 16 }}>
-                <strong style={{ fontSize: '0.95rem' }}>
-                  {getText(project.title) || 'Project'}
-                </strong>
-
-                {project.description && (
-                  <p style={{ ...textStyle, marginTop: 4 }}>
-                    {getText(project.description)}
-                  </p>
-                )}
-
-                {project.technologies && (
-                  <p
-                    style={{
-                      fontSize: '0.85rem',
-                      color: '#475569',
-                      marginTop: 4,
-                    }}
-                  >
-                    <strong>Technologies:</strong>{' '}
-                    {getText(project.technologies)}
-                  </p>
-                )}
-
-                {project.project_url && (
-                  <p
-                    style={{
-                      fontSize: '0.82rem',
-                      color: '#2563EB',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    Project URL: {getText(project.project_url)}
-                  </p>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Education */}
-        {educations.length > 0 && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Education</h3>
-
-            {educations.map((edu, index) => (
-              <div
-                key={edu.id || index}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  marginBottom: 12,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <div>
-                  <strong>{getText(edu.institution)}</strong>
-
-                  <p style={{ fontSize: '0.88rem', color: '#475569' }}>
-                    {[getText(edu.degree), getText(edu.field_of_study)]
-                      .filter(Boolean)
-                      .join(' — ')}
-                  </p>
-
-                  {edu.grade && (
-                    <p style={{ fontSize: '0.84rem', color: '#64748B' }}>
-                      Grade: {getText(edu.grade)}
-                    </p>
-                  )}
-                </div>
-
-                {edu.graduation_year && (
-                  <span style={{ fontSize: '0.85rem', color: '#64748B' }}>
-                    {getText(edu.graduation_year)}
-                  </span>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Certifications */}
-        {certifications.length > 0 && (
-          <section style={sectionStyle}>
-            <h3 style={headingStyle}>Certifications</h3>
-
-            {certifications.map((cert, index) => (
-              <div key={cert.id || index} style={{ marginBottom: 12 }}>
-                <strong>{getText(cert.name)}</strong>
-
-                <p style={{ fontSize: '0.87rem', color: '#475569' }}>
-                  {getText(cert.issuing_organization)}
-                  {cert.issue_date
-                    ? ` • ${getText(cert.issue_date)}`
-                    : ''}
-                </p>
-
-                {cert.credential_url && (
-                  <p
-                    style={{
-                      fontSize: '0.82rem',
-                      color: '#2563EB',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    Credential: {getText(cert.credential_url)}
-                  </p>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-      </div>
+      </section>
     </div>
-  );
+  </div>;
 }

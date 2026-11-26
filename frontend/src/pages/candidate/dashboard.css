@@ -365,13 +365,49 @@
 }
 
 .pipeline-modal {
-  padding: 22px;
+  box-sizing: border-box;
+  width: min(100%, 560px);
+  min-width: 0;
+  max-width: 560px;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin: auto;
+  padding: 24px;
+  border: 1px solid #E7E5DF;
+  border-radius: 16px;
+  background: #FFFEFC;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .22);
+}
+
+.pipeline-modal-overlay {
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pipeline-modal .ss-card-head {
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.pipeline-modal .ss-card-head > div {
+  min-width: 0;
+}
+
+.pipeline-modal-body,
+.pipeline-modal-body label {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .pipeline-modal-body {
   display: grid;
-  gap: 17px;
-  margin-top: 20px;
+  gap: 16px;
+  margin-top: 18px;
 }
 
 .pipeline-modal-body label {
@@ -383,14 +419,50 @@
 }
 
 .pipeline-modal-body textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   resize: vertical;
+}
+
+.pipeline-modal-body select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .pipeline-modal-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 9px;
   margin-top: 5px;
+}
+
+@media(max-width: 520px) {
+  .pipeline-modal-overlay {
+    align-items: flex-start;
+    padding: 12px;
+  }
+
+  .pipeline-modal {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+  }
+
+  .pipeline-modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .pipeline-modal-actions button {
+    width: 100%;
+    box-sizing: border-box;
+  }
 }
 
 @media(max-width:700px) {

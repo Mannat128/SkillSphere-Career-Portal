@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from app.models.user import UserRole
 
 class UserRegisterRequest(BaseModel):
@@ -32,7 +32,14 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    new_password: str = Field(..., min_length=6, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        if not any(character.isalpha() for character in value) or not any(character.isdigit() for character in value):
+            raise ValueError("Password must contain at least one letter and one number.")
+        return value
 
 class VerifyEmailRequest(BaseModel):
     token: str

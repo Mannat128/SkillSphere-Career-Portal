@@ -19,6 +19,7 @@ router = APIRouter(prefix="/resume-analysis", tags=["Resume Matching & Skill Gap
 def analyze_resume(
     resume_id: int,
     job_id: int,
+    candidate = Depends(get_current_candidate),
     db: Session = Depends(get_db)
 ):
     """
@@ -26,6 +27,14 @@ def analyze_resume(
     Compare candidate skills against job required skills, calculate transparent match percentage,
     matched skills, missing skills, and targeted improvement suggestions.
     """
+    # Do not let a caller analyze another candidate's resume by guessing its ID.
+    resume = db.query(Resume).filter(
+        Resume.id == resume_id,
+        Resume.candidate_id == candidate.id,
+    ).first()
+    if not resume:
+        raise NotFoundException("Resume")
+
     try:
         result = MatchingService.analyze_resume_for_job(db, resume_id, job_id)
         return result
@@ -61,6 +70,7 @@ def get_analyses_for_candidate(
 @router.post("/compare-multi", response_model=MultiJobMatchResponse)
 def compare_multi_jobs(
     req: MultiJobMatchRequest,
+    candidate = Depends(get_current_candidate),
     db: Session = Depends(get_db)
 ):
     """
@@ -69,7 +79,10 @@ def compare_multi_jobs(
     Compare a single resume across multiple active job postings to help the candidate
     identify the best-fitting opportunities.
     """
-    resume = db.query(Resume).filter(Resume.id == req.resume_id).first()
+    resume = db.query(Resume).filter(
+        Resume.id == req.resume_id,
+        Resume.candidate_id == candidate.id,
+    ).first()
     if not resume:
         raise NotFoundException("Resume")
 

@@ -75,6 +75,10 @@ backend/uploads/*
 !backend/uploads/.gitkeep
 
 uploads/
+private_proctoring_recordings/
+**/private_proctoring_recordings/
+private_support_attachments/
+**/private_support_attachments/
 
 # ==========================================
 # IDE & Editor Settings
@@ -88,11 +92,13 @@ uploads/
 # Testing & Coverage
 # ==========================================
 .pytest_cache/
+**/pytest-of-*/
 .coverage
 .coverage.*
 htmlcov/
 .tox/
 .nox/
+backend/yolo26n.pt
 
 # ==========================================
 # Logs & Temporary Files

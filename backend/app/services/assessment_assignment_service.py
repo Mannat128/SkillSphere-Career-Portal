@@ -15,7 +15,9 @@ from app.models.recruiter_assessment import (
 from app.models.job import Job
 from app.models.application import Application
 from app.models.notification import Notification
+from app.models.proctoring import ProctoringSession
 from app.core.exceptions import BadRequestException
+from app.services.recording_retention import sync_recording_expiry
 
 
 class AssessmentAssignmentService:
@@ -304,6 +306,8 @@ class AssessmentAssignmentService:
             "qualification_rule": ">",
             "negative_marking": config.negative_marking,
             "negative_marks": config.negative_marks,
+            "available_from": config.available_from.isoformat() if config.available_from else None,
+            "available_until": config.available_until.isoformat() if config.available_until else None,
         }
 
         assignment = AssessmentAssignment(
@@ -468,6 +472,17 @@ class AssessmentAssignmentService:
 
         attempt.is_submitted = True
         attempt.submitted_at = now
+
+        # Recording upload is required before candidate submission in the
+        # current workflow. Start its retention window from this immutable
+        # assessment-completion timestamp, not from the earlier upload time.
+        proctoring_session = (
+            db.query(ProctoringSession)
+            .filter(ProctoringSession.assignment_id == assignment.id)
+            .first()
+        )
+        if proctoring_session:
+            sync_recording_expiry(proctoring_session, attempt)
 
         attempt.time_taken_seconds = (
             int((now - attempt.started_at).total_seconds())

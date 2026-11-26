@@ -31,7 +31,6 @@ const initialAIForm = {
   difficulty: 'Medium',
   count: 5,
   question_type: 'Mixed',
-  provider: ''
 };
 
 export default function QuestionBank() {
@@ -277,7 +276,6 @@ export default function QuestionBank() {
       const response = await api.post('/question-bank/ai-generate', {
         ...aiForm,
         count: Number(aiForm.count),
-        provider: aiForm.provider || null
       });
 
       setAiQuestions(response.data.questions || []);
@@ -604,21 +602,6 @@ export default function QuestionBank() {
                 <option>Code Snippet</option>
                 <option>Fill in the Blank</option>
                 <option>Scenario-based</option>
-              </select>
-            </label>
-
-            <label>
-              AI Provider
-              <select
-                value={aiForm.provider}
-                onChange={e => setAiForm(previous => ({
-                  ...previous,
-                  provider: e.target.value
-                }))}
-              >
-                <option value="">Configured Default</option>
-                <option value="google_gemini">Google Gemini</option>
-                <option value="openai">OpenAI</option>
               </select>
             </label>
 

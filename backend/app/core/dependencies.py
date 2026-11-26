@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Union, Optional
 from fastapi import Depends, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -22,7 +22,7 @@ def get_current_user(
 
     payload = decode_token(token)
     if not payload:
-        raise UnauthorizedException("Invalid or expired authentication token")
+        raise UnauthorizedException("Invalid or expired authentication token", headers={"X-Token-Invalid": "true"})
 
     email: str = payload.get("sub")
     user_id: int = payload.get("user_id")
@@ -38,6 +38,28 @@ def get_current_user(
         raise ForbiddenException("Your account has been deactivated. Please contact support.")
 
     return user
+
+def get_optional_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Retrieve the current authenticated User if a valid bearer token is provided; returns None for guests."""
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+        if not payload:
+            return None
+        email: str = payload.get("sub")
+        user_id: int = payload.get("user_id")
+        if not email or not user_id:
+            return None
+        user = db.query(User).filter(User.id == user_id, User.email == email).first()
+        if not user or not user.is_active:
+            return None
+        return user
+    except Exception:
+        return None
 
 def require_role(allowed_roles: Union[UserRole, List[UserRole]]):
     """Factory dependency ensuring current user has one of the required roles."""

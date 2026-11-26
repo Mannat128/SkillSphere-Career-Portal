@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Bell, User as UserIcon, LogOut, CheckCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { useNavigate } from 'react-router-dom';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -31,6 +33,22 @@ export default function Navbar() {
       setUnreadCount(0);
       setNotifications(notifications.map(n => ({ ...n, is_read: true })));
     } catch (e) {}
+  };
+
+  const openNotification = async (notification) => {
+    if (notification.link) {
+      if (!notification.is_read) {
+        try {
+          await api.put(`/notifications/${notification.id}/read`);
+          setNotifications(items => items.map(item => item.id === notification.id ? { ...item, is_read: true } : item));
+          setUnreadCount(count => Math.max(0, count - 1));
+        } catch (e) {
+          // Navigation should remain available if marking read fails.
+        }
+      }
+      setShowDropdown(false);
+      navigate(notification.link);
+    }
   };
 
   return (
@@ -122,9 +140,18 @@ export default function Navbar() {
                   </p>
                 ) : (
                   notifications.map((n) => (
-                    <div
+                    <button
                       key={n.id}
+                      type="button"
+                      onClick={() => openNotification(n)}
+                      disabled={!n.link}
                       style={{
+                        display: 'block',
+                        width: '100%',
+                        textAlign: 'left',
+                        cursor: n.link ? 'pointer' : 'default',
+                        border: 0,
+                        font: 'inherit',
                         padding: '10px',
                         borderRadius: 'var(--radius-sm)',
                         background: n.is_read ? 'transparent' : 'var(--surface-subtle)',
@@ -134,7 +161,7 @@ export default function Navbar() {
                     >
                       <p style={{ fontSize: '0.85rem', fontWeight: n.is_read ? 500 : 700 }}>{n.title}</p>
                       <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>{n.message}</p>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>

@@ -95,6 +95,7 @@ def apply_for_job(
 
     db.commit()
     db.refresh(app_record)
+    db.flush()
 
     # 4. Status history record
     history = ApplicationStatusHistory(

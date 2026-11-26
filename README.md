@@ -97,7 +97,6 @@ SkillSphere uses a consistent visual design system.
 - Job moderation.
 - Reports and analytics.
 - Audit log monitoring.
-- Shared question bank management.
 
 ---
 

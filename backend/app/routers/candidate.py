@@ -2,7 +2,7 @@ import os
 import io
 import uuid
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, status, Response, UploadFile, File
+from fastapi import APIRouter, Depends, status, Response, UploadFile, File, Query
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
@@ -38,7 +38,10 @@ from app.schemas.candidate import (
 )
 from app.schemas.job import JobResponse
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.colors import HexColor
+from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
+from urllib.parse import urlsplit
 
 router = APIRouter(prefix="/candidate", tags=["Candidate Profile"])
 
@@ -195,10 +198,15 @@ def get_profile(
         "user_id": current_user.id,
         "full_name": current_user.full_name,
         "email": current_user.email,
+        "contact_email": candidate.contact_email,
         "phone": candidate.phone,
         "location": candidate.location,
         "headline": candidate.headline,
         "bio": candidate.bio,
+        "linkedin_url": candidate.linkedin_url,
+        "github_url": candidate.github_url,
+        "portfolio_url": candidate.portfolio_url,
+        "additional_url": candidate.additional_url,
         "profile_percentage": candidate.profile_percentage,
         "avatar_url": current_user.avatar_url,
         "visibility": candidate.visibility or "PUBLIC_TO_RECRUITERS",
@@ -227,14 +235,22 @@ def update_profile(
     db: Session = Depends(get_db)
 ):
     """Update personal candidate profile fields."""
+    if req.full_name is not None:
+        current_user.full_name = req.full_name
     if req.phone is not None:
         candidate.phone = req.phone
+    if "contact_email" in req.model_fields_set:
+        candidate.contact_email = req.contact_email or None
     if req.location is not None:
         candidate.location = req.location
     if req.headline is not None:
         candidate.headline = req.headline
     if req.bio is not None:
         candidate.bio = req.bio
+    for field in ("linkedin_url", "github_url", "portfolio_url", "additional_url"):
+        if field in req.model_fields_set:
+            value = getattr(req, field)
+            setattr(candidate, field, value or None)
 
     candidate.profile_percentage = calculate_profile_percentage(candidate, current_user)
     db.commit()
@@ -663,7 +679,11 @@ def add_project(
         title=item.title,
         description=item.description,
         technologies=item.technologies,
-        project_url=item.project_url
+        project_url=item.project_url,
+        github_url=item.github_url,
+        image_url=item.image_url,
+        start_date=item.start_date,
+        end_date=item.end_date,
     )
     db.add(proj)
     db.commit()
@@ -692,6 +712,10 @@ def update_project(
     proj.description = item.description
     proj.technologies = item.technologies
     proj.project_url = item.project_url
+    proj.github_url = item.github_url
+    proj.image_url = item.image_url
+    proj.start_date = item.start_date
+    proj.end_date = item.end_date
 
     candidate.profile_percentage = calculate_profile_percentage(candidate, current_user)
     db.commit()
@@ -853,33 +877,83 @@ def get_smart_alerts(
 
 # ==================== RESUME BUILDER PDF EXPORT ====================
 
+RESUME_BUILDER_SECTIONS = [
+    "summary", "skills", "experience", "projects", "education",
+    "certifications", "links",
+]
+
+
+def _resolve_resume_builder_sections(sections: Optional[str]) -> List[str]:
+    """Preserve an explicitly empty selection while defaulting omitted options."""
+    if sections is None:
+        return list(RESUME_BUILDER_SECTIONS)
+    return [
+        item.strip()
+        for item in sections.split(",")
+        if item.strip() in RESUME_BUILDER_SECTIONS
+    ]
+
 @router.get("/resume-builder/download-pdf")
 @router.get("/resume-builder/pdf")
 def download_built_resume(
     current_user: User = Depends(get_current_user),
-    candidate: Candidate = Depends(get_current_candidate)
+    candidate: Candidate = Depends(get_current_candidate),
+    template: str = Query("classic_ats"),
+    accent: str = Query("#5B7C3C"),
+    font: str = Query("Arial"),
+    spacing: float = Query(1.0, ge=0.75, le=1.2),
+    sections: Optional[str] = Query(None, max_length=160),
 ):
-    """Generate a multi-page resume from the candidate's saved profile."""
+    """Generate a template-aware multi-page PDF from the shared profile data."""
+    allowed_templates = {
+        "classic_ats", "modern_professional", "minimalist",
+        "two_column", "executive", "fresh_graduate",
+    }
+    if template not in allowed_templates:
+        template = "classic_ats"
+    if not (len(accent) == 7 and accent.startswith("#") and all(ch in "0123456789abcdefABCDEF" for ch in accent[1:])):
+        accent = "#5B7C3C"
+    font_map = {
+        "Arial": "Helvetica", "Calibri": "Helvetica", "Helvetica": "Helvetica",
+        "Georgia": "Times-Roman", "Garamond": "Times-Roman",
+    }
+    body_font = font_map.get(font, "Helvetica")
+    bold_font = "Times-Bold" if body_font == "Times-Roman" else "Helvetica-Bold"
+    italic_font = "Times-Italic" if body_font == "Times-Roman" else "Helvetica-Oblique"
+    visible_sections = _resolve_resume_builder_sections(sections)
+
     output = io.BytesIO()
     p = canvas.Canvas(output, pagesize=letter)
     p.setTitle(f"{current_user.full_name or 'Candidate'} - SkillSphere Resume")
 
     page_width, page_height = letter
-    left, right = 50, page_width - 50
+    left, right = (190, page_width - 38) if template == "two_column" else (50, page_width - 50)
     max_width = right - left
     y = page_height - 55
+    sidebar_y = page_height - 55
+    accent_color = HexColor(accent)
+
+    def draw_page_background():
+        if template == "two_column":
+            p.setFillColor(HexColor("#EEF1E8"))
+            p.rect(0, 0, 164, page_height, fill=1, stroke=0)
+        if template == "modern_professional":
+            p.setFillColor(HexColor("#F5F7F1"))
+            p.rect(0, page_height - 24, page_width, 24, fill=1, stroke=0)
 
     def new_page():
-        nonlocal y
+        nonlocal y, sidebar_y
         p.showPage()
+        draw_page_background()
         y = page_height - 55
+        sidebar_y = page_height - 55
 
     def ensure_space(height=20):
         nonlocal y
         if y - height < 50:
             new_page()
 
-    def draw_wrapped(value, font="Helvetica", size=9, indent=0, line_gap=3):
+    def draw_wrapped(value, font=None, size=9, indent=0, line_gap=None):
         """Draw text with wrapping and automatic page breaks."""
         nonlocal y
         if value is None:
@@ -887,6 +961,8 @@ def download_built_resume(
         text = str(value).strip()
         if not text:
             return
+        font = font or body_font
+        line_gap = line_gap if line_gap is not None else 3 * spacing
         # ReportLab's built-in Helvetica fonts use WinAnsi; replace unsupported
         # characters safely so a candidate's data cannot break PDF generation.
         text = text.encode("cp1252", errors="replace").decode("cp1252")
@@ -925,128 +1001,184 @@ def download_built_resume(
         nonlocal y
         ensure_space(34)
         y -= 6
-        p.setFont("Helvetica-Bold", 11)
+        p.setFillColor(accent_color if template != "executive" else HexColor("#222222"))
+        p.setFont(bold_font, 11)
         p.drawString(left, y, title.upper())
         y -= 5
-        p.setStrokeColorRGB(0.72, 0.76, 0.81)
+        p.setStrokeColor(accent_color)
         p.line(left, y, right, y)
         y -= 14
+        p.setFillColor(HexColor("#222222"))
 
     def draw_item_title(title, subtitle=None):
         nonlocal y
         ensure_space(28)
-        draw_wrapped(title, "Helvetica-Bold", 9.5)
+        draw_wrapped(title, bold_font, 9.5)
         if subtitle:
-            draw_wrapped(subtitle, "Helvetica", 9)
+            draw_wrapped(subtitle, body_font, 9)
+
+    def draw_link(label, url, indent=8):
+        nonlocal y
+        parsed = urlsplit(str(url or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return
+        top = y + 10
+        draw_wrapped(f"{label}: {url}", body_font, 8, indent=indent)
+        p.linkURL(str(url), (left + indent, max(45, y), right, min(page_height - 24, top)), relative=0, thickness=0)
+
+    def draw_sidebar(values, title):
+        nonlocal sidebar_y
+        sidebar_x, sidebar_width = 30, 112
+        p.setFont(bold_font, 9)
+        p.setFillColor(accent_color)
+        if sidebar_y < 66:
+            return
+        p.drawString(sidebar_x, sidebar_y, title.upper())
+        sidebar_y -= 17
+        p.setFont(body_font, 8)
+        p.setFillColor(HexColor("#303329"))
+        for value in values:
+            for line in simpleSplit(str(value), body_font, 8, sidebar_width):
+                if sidebar_y < 48:
+                    return
+                p.drawString(sidebar_x, sidebar_y, line)
+                sidebar_y -= 11
+            sidebar_y -= 4
+
+    draw_page_background()
 
     # Header and contact details
     name = current_user.full_name or "Candidate"
-    draw_wrapped(name, "Helvetica-Bold", 20)
+    if template in {"classic_ats", "minimalist"}:
+        draw_wrapped(name, bold_font, 20)
+    else:
+        p.setFillColor(accent_color)
+        draw_wrapped(name, bold_font, 22 if template == "executive" else 20)
+        p.setFillColor(HexColor("#222222"))
     if candidate.headline:
-        draw_wrapped(candidate.headline, "Helvetica-Oblique", 10)
-    contacts = [current_user.email, candidate.phone, candidate.location]
+        draw_wrapped(candidate.headline, italic_font, 10)
+    contacts = [candidate.contact_email or current_user.email, candidate.phone, candidate.location]
     contacts = [str(item).strip() for item in contacts if item]
-    if contacts:
-        draw_wrapped(" | ".join(contacts), "Helvetica", 8.5)
+    if template == "two_column":
+        draw_sidebar(contacts, "Contact")
+    elif contacts:
+        draw_wrapped(" | ".join(contacts), body_font, 8.5)
     y -= 4
     p.setStrokeColorRGB(0.15, 0.18, 0.22)
     p.line(left, y, right, y)
     y -= 16
 
-    # Professional summary
-    summary = candidate.bio or candidate.headline
-    if summary:
-        draw_section("Professional Summary")
-        draw_wrapped(summary)
-        y -= 6
+    skill_names = [cs.skill.name for cs in candidate.skills if cs.skill and cs.skill.name]
+    if template == "two_column":
+        draw_sidebar(skill_names, "Skills")
 
-    # Technical skills
-    if candidate.skills:
-        skill_names = [
-            cs.skill.name for cs in candidate.skills
-            if cs.skill and cs.skill.name
-        ]
-        if skill_names:
+    def render_summary():
+        nonlocal y
+        summary = candidate.bio or candidate.headline
+        if summary:
+            draw_section("Professional Summary")
+            draw_wrapped(summary)
+            y_spacing = 6 * spacing
+            y -= y_spacing
+
+    def render_skills():
+        nonlocal y
+        if skill_names and template != "two_column":
             draw_section("Technical Skills")
             draw_wrapped(" | ".join(skill_names))
-            y -= 6
+            y -= 6 * spacing
 
-    # Work experience
-    if candidate.experiences:
-        draw_section("Work Experience")
-        for exp in candidate.experiences:
-            title = " - ".join(
-                str(value) for value in (exp.position, exp.company) if value
-            ) or "Work Experience"
-            draw_item_title(title)
-            dates = " - ".join(
-                str(value) for value in (
-                    exp.start_date,
-                    "Present" if exp.is_current else exp.end_date
-                ) if value
-            )
-            if dates:
-                draw_wrapped(dates, "Helvetica-Oblique", 8)
-            if exp.location:
-                draw_wrapped(exp.location, "Helvetica", 8)
-            if exp.description:
-                draw_wrapped(exp.description, "Helvetica", 9, indent=8)
-            y -= 6
+    def render_experience():
+        nonlocal y
+        if candidate.experiences:
+            draw_section("Work Experience")
+            for exp in candidate.experiences:
+                title = " - ".join(str(value) for value in (exp.position, exp.company) if value)
+                if title:
+                    draw_item_title(title)
+                dates = " - ".join(str(value) for value in (exp.start_date, "Present" if exp.is_current else exp.end_date) if value)
+                if dates:
+                    draw_wrapped(dates, italic_font, 8)
+                if exp.location:
+                    draw_wrapped(exp.location, body_font, 8)
+                if exp.description:
+                    draw_wrapped(exp.description, body_font, 9, indent=8)
+                y -= 6 * spacing
 
-    # Projects
-    if candidate.projects:
-        draw_section("Projects")
-        for project in candidate.projects:
-            draw_item_title(project.title or "Project")
-            if project.description:
-                draw_wrapped(project.description, "Helvetica", 9, indent=8)
-            if project.technologies:
-                draw_wrapped(
-                    f"Technologies: {project.technologies}",
-                    "Helvetica-Bold", 8, indent=8
-                )
-            if project.project_url:
-                draw_wrapped(
-                    f"Project URL: {project.project_url}",
-                    "Helvetica", 8, indent=8
-                )
-            y -= 6
+    def render_projects():
+        nonlocal y
+        if candidate.projects:
+            draw_section("Projects")
+            for project in candidate.projects:
+                if project.title:
+                    draw_item_title(project.title)
+                if project.start_date or project.end_date:
+                    draw_wrapped(" – ".join(item for item in (project.start_date, project.end_date) if item), italic_font, 8)
+                if project.description:
+                    draw_wrapped(project.description, body_font, 9, indent=8)
+                if project.technologies:
+                    draw_wrapped(f"Technologies: {project.technologies}", bold_font, 8, indent=8)
+                if project.project_url:
+                    draw_link("Live project", project.project_url)
+                if project.github_url:
+                    draw_link("GitHub", project.github_url)
+                y -= 6 * spacing
 
-    # Education
-    if candidate.educations:
-        draw_section("Education")
-        for edu in candidate.educations:
-            degree = " - ".join(
-                str(value) for value in (edu.degree, edu.field_of_study) if value
-            ) or "Education"
-            draw_item_title(degree, edu.institution)
-            details = []
-            if edu.graduation_year:
-                details.append(str(edu.graduation_year))
-            if edu.grade:
-                details.append(f"Grade: {edu.grade}")
-            if details:
-                draw_wrapped(" | ".join(details), "Helvetica", 8)
-            y -= 5
+    def render_education():
+        nonlocal y
+        if candidate.educations:
+            draw_section("Education")
+            for edu in candidate.educations:
+                degree = " - ".join(str(value) for value in (edu.degree, edu.field_of_study) if value)
+                if degree:
+                    draw_item_title(degree, edu.institution)
+                details = [str(edu.graduation_year)] if edu.graduation_year else []
+                if edu.grade:
+                    details.append(f"Grade: {edu.grade}")
+                if details:
+                    draw_wrapped(" | ".join(details), body_font, 8)
+                y -= 5 * spacing
 
-    # Certifications
-    if candidate.certifications:
-        draw_section("Certifications")
-        for cert in candidate.certifications:
-            draw_item_title(
-                cert.name or "Certification",
-                cert.issuing_organization
-            )
-            if cert.issue_date:
-                draw_wrapped(
-                    f"Issue Date: {cert.issue_date}", "Helvetica", 8
-                )
-            if cert.credential_url:
-                draw_wrapped(
-                    f"Credential URL: {cert.credential_url}",
-                    "Helvetica", 8, indent=8
-                )
-            y -= 5
+    def render_certifications():
+        nonlocal y
+        if candidate.certifications:
+            draw_section("Certifications")
+            for cert in candidate.certifications:
+                draw_item_title(cert.name, cert.issuing_organization)
+                if cert.issue_date:
+                    draw_wrapped(f"Issue Date: {cert.issue_date}", body_font, 8)
+                if cert.credential_url:
+                    draw_link("Credential", cert.credential_url)
+                y -= 5 * spacing
+
+    def render_links():
+        professional_links = [
+            ("LinkedIn", candidate.linkedin_url), ("GitHub", candidate.github_url),
+            ("Portfolio", candidate.portfolio_url), ("Professional link", candidate.additional_url),
+        ]
+        professional_links = [(label, url) for label, url in professional_links if url]
+        if professional_links and template != "two_column":
+            draw_section("Professional Links")
+            for label, url in professional_links:
+                draw_link(label, url)
+
+    # Keep the vertical cursor mutable so small section renderers stay readable.
+    nonlocal_y = [y]
+    renderer_map = {
+        "summary": render_summary, "skills": render_skills, "experience": render_experience,
+        "projects": render_projects, "education": render_education,
+        "certifications": render_certifications, "links": render_links,
+    }
+    # Section helpers update the shared cursor after each rendered section.
+    for section_key in visible_sections:
+        y = nonlocal_y[0]
+        renderer_map[section_key]()
+        nonlocal_y[0] = y
+
+    if template == "two_column":
+        professional_links = [url for url in (candidate.linkedin_url, candidate.github_url, candidate.portfolio_url, candidate.additional_url) if url]
+        if professional_links:
+            draw_sidebar(professional_links, "Links")
 
     p.save()
     output.seek(0)

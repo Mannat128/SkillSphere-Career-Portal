@@ -27,6 +27,7 @@ export default function SkillGapAnalysis() {
   const [historyList, setHistoryList] = useState([]);
   
   const [loadingInitial, setLoadingInitial] = useState(true);
+  const [resumeLoadFailed, setResumeLoadFailed] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [comparingMulti, setComparingMulti] = useState(false);
   const [activeTab, setActiveTab] = useState('single'); // 'single' | 'multi' | 'history'
@@ -40,29 +41,56 @@ export default function SkillGapAnalysis() {
     setLoadingInitial(true);
     setErrorMsg('');
     try {
-      const [resumesRes, jobsRes, historyRes] = await Promise.all([
+      const results = await Promise.allSettled([
         api.get('/resumes'),
         api.get('/jobs'),
         api.get('/resume-analysis')
       ]);
 
-      const resumeData = resumesRes.data || [];
-      const jobData = (jobsRes.data || []).filter(j => j.status === 'PUBLISHED');
-      const histData = historyRes.data || [];
+      const [resumesResult, jobsResult, historyResult] = results;
+      const errors = [];
+
+      const resumeData = resumesResult.status === 'fulfilled'
+        ? (Array.isArray(resumesResult.value.data) ? resumesResult.value.data : [])
+        : [];
+      if (resumesResult.status === 'rejected') {
+        setResumeLoadFailed(true);
+        errors.push('Could not load your resumes. Please refresh or open Resume Upload.');
+      } else {
+        setResumeLoadFailed(false);
+      }
+
+      // GET /jobs returns a paginated { items, total } payload. Accept a
+      // direct array too for API compatibility and tests.
+      const jobsPayload = jobsResult.status === 'fulfilled' ? jobsResult.value.data : null;
+      const jobsList = Array.isArray(jobsPayload) ? jobsPayload : (Array.isArray(jobsPayload?.items) ? jobsPayload.items : []);
+      const jobData = jobsList.filter(j => j.status === 'PUBLISHED');
+      if (jobsResult.status === 'rejected') {
+        errors.push('Could not load open jobs. Your resume list is still available.');
+      }
+
+      const histData = historyResult.status === 'fulfilled' && Array.isArray(historyResult.value.data)
+        ? historyResult.value.data
+        : [];
+      if (historyResult.status === 'rejected') {
+        errors.push('Past analysis history is temporarily unavailable.');
+      }
 
       setResumes(resumeData);
       setJobs(jobData);
       setHistoryList(histData);
 
       if (resumeData.length > 0) {
-        setSelectedResumeId(resumeData[0].id.toString());
+        const preferredResume = resumeData.find(resume => resume.is_primary) || resumeData[0];
+        setSelectedResumeId(preferredResume.id.toString());
       }
       if (jobData.length > 0) {
         setSelectedJobId(jobData[0].id.toString());
       }
+      setErrorMsg(errors.join(' '));
     } catch (err) {
       console.error('Failed to load matching data', err);
-      setErrorMsg('Could not load resumes or open jobs. Please try refreshing.');
+      setErrorMsg('Could not load matching data. Please try refreshing.');
     } finally {
       setLoadingInitial(false);
     }
@@ -110,6 +138,12 @@ export default function SkillGapAnalysis() {
       };
       const res = await api.post('/resume-analysis/compare-multi', payload);
       setMultiJobResults(res.data?.comparisons || []);
+      try {
+        const histRes = await api.get('/resume-analysis');
+        setHistoryList(Array.isArray(histRes.data) ? histRes.data : []);
+      } catch {
+        setErrorMsg('Comparison completed, but history could not be refreshed. Please refresh the page to see the latest history.');
+      }
     } catch (err) {
       console.error('Multi comparison failed', err);
       const detail = err.response?.data?.detail || 'Multi-job comparison failed.';
@@ -188,6 +222,13 @@ export default function SkillGapAnalysis() {
           <RefreshCw size={36} className="spin" style={{ margin: '0 auto 12px', color: 'var(--primary-powder-blue)' }} />
           <p>Loading resumes and job market requirements...</p>
         </div>
+      ) : resumeLoadFailed ? (
+        <div className="card" style={{ textAlign: 'center', padding: '48px 20px' }}>
+          <AlertTriangle size={40} color="var(--danger)" style={{ margin: '0 auto 14px' }} />
+          <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '8px' }}>Resume list unavailable</h3>
+          <p style={{ color: 'var(--text-muted)', marginBottom: '18px' }}>Your saved resumes could not be loaded. Retry before starting a match analysis.</p>
+          <button type="button" className="btn btn-primary" onClick={loadData}>Try again</button>
+        </div>
       ) : resumes.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: '60px 20px' }}>
           <FileText size={48} color="var(--primary-powder-blue)" style={{ margin: '0 auto 16px' }} />
@@ -210,9 +251,9 @@ export default function SkillGapAnalysis() {
                   <Sparkles size={20} color="var(--primary-powder-blue)" />
                   Select Resume & Target Job
                 </h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginBottom: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '20px', marginBottom: '20px', minWidth: 0 }}>
                   {/* Resume Select */}
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
                       Select Your Resume:
                     </label>
@@ -221,7 +262,7 @@ export default function SkillGapAnalysis() {
                         className="form-control"
                         value={selectedResumeId}
                         onChange={(e) => setSelectedResumeId(e.target.value)}
-                        style={{ paddingLeft: '38px', height: '44px' }}
+                        style={{ paddingLeft: '38px', height: '44px', width: '100%', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box', overflow: 'hidden', textOverflow: 'ellipsis' }}
                       >
                         {resumes.map((r) => (
                           <option key={r.id} value={r.id}>
@@ -234,7 +275,7 @@ export default function SkillGapAnalysis() {
                   </div>
 
                   {/* Job Select */}
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
                       Target Job Opportunity:
                     </label>
@@ -243,7 +284,7 @@ export default function SkillGapAnalysis() {
                         className="form-control"
                         value={selectedJobId}
                         onChange={(e) => setSelectedJobId(e.target.value)}
-                        style={{ paddingLeft: '38px', height: '44px' }}
+                        style={{ paddingLeft: '38px', height: '44px', width: '100%', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box', overflow: 'hidden', textOverflow: 'ellipsis' }}
                       >
                         {jobs.map((j) => (
                           <option key={j.id} value={j.id}>

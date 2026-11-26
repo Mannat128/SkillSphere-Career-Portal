@@ -413,3 +413,43 @@ def init_db(db: Session) -> None:
             db.add(question)
         db.commit()
         logger.info(f"Seeded {len(INITIAL_QUESTION_BANK)} shared Question Bank questions.")
+
+    # Seed TechnicalAssessments & AssessmentQuestions (Candidate practice quizzes)
+    existing_assessment_techs = {a.technology for a in db.query(TechnicalAssessment.technology).all()}
+
+    # Group initial questions by technology/category for practice assessments
+    tech_categories = ["Python", "React", "SQL", "JavaScript", "FastAPI", "Java"]
+    for tech in tech_categories:
+        if tech not in existing_assessment_techs:
+            tech_questions = [q for q in INITIAL_QUESTION_BANK if q["category"] == tech]
+            if not tech_questions:
+                continue
+
+            assessment = TechnicalAssessment(
+                title=f"{tech} Technical Assessment",
+                technology=tech,
+                description=f"Standard multiple-choice assessment to evaluate proficiency in {tech}.",
+                difficulty="Intermediate",
+                duration_minutes=15,
+                passing_score=70.0,
+                total_questions=len(tech_questions),
+                is_active=True
+            )
+            db.add(assessment)
+            db.flush()
+
+            for q in tech_questions:
+                question = AssessmentQuestion(
+                    assessment_id=assessment.id,
+                    question_text=q["question_text"],
+                    option_a=q["option_a"],
+                    option_b=q["option_b"],
+                    option_c=q["option_c"],
+                    option_d=q["option_d"],
+                    correct_option=q["correct_answer"],
+                    explanation=q.get("explanation")
+                )
+                db.add(question)
+
+            db.commit()
+            logger.info(f"Seeded TechnicalAssessment and questions for '{tech}'.")

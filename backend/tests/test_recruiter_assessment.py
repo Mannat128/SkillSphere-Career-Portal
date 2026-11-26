@@ -28,6 +28,35 @@ def create_recruiter_and_login():
     token = login.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}, email
 
+def create_admin_and_login():
+    """Log in with the configured admin account used by the test database."""
+    email = settings.ADMIN_EMAIL
+    password = settings.ADMIN_PASSWORD
+    assert email and password, "ADMIN_EMAIL and ADMIN_PASSWORD must be configured for tests"
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": password},
+    )
+    assert login.status_code == 200, f"Admin login failed: {login.status_code} {login.text}"
+    token = login.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def approve_job_as_admin(job_id: int):
+    """Publish a recruiter-created job before testing candidate applications."""
+    admin_headers = create_admin_and_login()
+    response = client.post(
+        f"/api/v1/admin/jobs/{job_id}/approve",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, (
+        f"Admin approval failed for job {job_id}: "
+        f"{response.status_code} {response.text}"
+    )
+    return response
+
+
 def create_candidate_and_login():
     """Helper to create a candidate and return auth headers."""
     uid = uuid.uuid4().hex[:8]
@@ -209,6 +238,10 @@ def test_first_round_assessment_end_to_end_flow():
     assert job_res.status_code == 201
     job_id = job_res.json()["id"]
 
+    # Jobs are created as MODERATION_PENDING. Admin approval is required
+    # before candidates are allowed to apply.
+    approve_job_as_admin(job_id)
+
     # 2. Recruiter configures First Round Assessment
     config_res = client.post(
         f"/api/v1/jobs/{job_id}/assessment",
@@ -236,7 +269,9 @@ def test_first_round_assessment_end_to_end_flow():
 
     # 3. Candidate applies for job
     apply_res = client.post(f"/api/v1/applications/jobs/{job_id}/apply", headers=cand_headers, json={})
-    assert apply_res.status_code == 201
+    assert apply_res.status_code == 201, (
+        f"Candidate application failed: {apply_res.status_code} {apply_res.text}"
+    )
     app_id = apply_res.json()["id"]
 
     # 4. Recruiter shortlists candidate
@@ -265,11 +300,32 @@ def test_first_round_assessment_end_to_end_flow():
     assert assignments[0]["status"] == "PENDING"
 
     # 6. Candidate starts test
+    # ---- NEW STEP: give proctoring consent ----
+    consent_res = client.post(
+        f"/api/v1/candidate/first-round-assessments/{assignment_id}/proctoring/consent",
+        headers=cand_headers,
+        json={
+            "consent_given": True,
+            "camera_permission_granted": True,
+            "microphone_permission_granted": True,
+            "consent_version": "v1",
+        },
+    )
+    assert consent_res.status_code == 200, f"Consent failed: {consent_res.status_code} {consent_res.text}"
+    consent_data = consent_res.json()
+    assert consent_data["consent_given"] is True
+    assert consent_data["camera_permission_granted"] is True
+    assert consent_data["session_status"] == "READY"
+
+    # original start step
+    # Start the assessment once after consent.
     start_res = client.post(
         f"/api/v1/candidate/first-round-assessments/{assignment_id}/start",
-        headers=cand_headers
+        headers=cand_headers,
     )
-    assert start_res.status_code == 200
+    assert start_res.status_code == 200, (
+    f"Assessment start failed: {start_res.status_code} {start_res.text}"
+)
     test_data = start_res.json()
     assert len(test_data["questions"]) == 3
     assert test_data["remaining_seconds"] > 0
@@ -287,6 +343,22 @@ def test_first_round_assessment_end_to_end_flow():
         json={"question_id": q1_id, "selected_option": "B", "is_marked_for_review": True}
     )
     assert save_res.status_code == 200
+
+    # Start and complete the proctoring recording before submission
+    start_rec_res = client.post(
+        f"/api/v1/candidate/first-round-assessments/{assignment_id}/proctoring/recording/start",
+        headers=cand_headers,
+    )
+    assert start_rec_res.status_code == 200, f"Recording start failed: {start_rec_res.text}"
+
+    # Upload mock valid WebM recording with EBML signature (1A45DFA3)
+    webm_header = bytes.fromhex("1A45DFA3010000000000001F4286810142F7810142F2810442F381084282847765626D4287810242858102")
+    upload_rec_res = client.post(
+        f"/api/v1/candidate/first-round-assessments/{assignment_id}/proctoring/recording/upload",
+        headers=cand_headers,
+        files={"file": ("test_recording.webm", webm_header, "video/webm")},
+    )
+    assert upload_rec_res.status_code == 200, f"Recording upload failed: {upload_rec_res.text}"
 
     # 8. Candidate submits assessment
     submit_res = client.post(

@@ -33,8 +33,8 @@ export default function ResetPassword() {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must contain at least 6 characters.');
+    if (password.length < 8 || !/[a-z]/i.test(password) || !/\d/.test(password)) {
+      setError('Password must contain at least 8 characters, including a letter and a number.');
       return;
     }
 
@@ -127,7 +127,7 @@ export default function ResetPassword() {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter new password"
                 required
-                minLength={6}
+                minLength={8}
                 style={inputStyle}
               />
               <button

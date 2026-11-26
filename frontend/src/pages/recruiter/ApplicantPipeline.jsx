@@ -43,6 +43,8 @@ export default function ApplicantPipeline() {
   const [selectedApplicant, setSelectedApplicant] = useState(null);
   const [newStatus, setNewStatus] = useState('');
   const [notes, setNotes] = useState('');
+  const [openingResumeId, setOpeningResumeId] = useState(null);
+  const [resumeError, setResumeError] = useState('');
 
   const loadPipeline = async () => {
     setLoading(true);
@@ -71,6 +73,15 @@ export default function ApplicantPipeline() {
   useEffect(() => {
     loadPipeline();
   }, [selectedJob]);
+
+  useEffect(() => {
+    if (!selectedApplicant) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectedApplicant]);
 
   const allApplicants = useMemo(() => {
     return STAGES.flatMap((stage) =>
@@ -135,6 +146,78 @@ export default function ApplicantPipeline() {
     setSuccess('');
   };
 
+  const openApplicantResume = async (applicant) => {
+    const urlResumeId = applicant.resume_url?.match(/\/resumes\/(\d+)\/download(?:\?|$)/)?.[1];
+    const resumeId = applicant.resume_id || urlResumeId;
+    if (!resumeId) {
+      setResumeError('This application does not have an accessible resume attached.');
+      return;
+    }
+
+    const previewWindow = window.open('about:blank', '_blank');
+    if (!previewWindow) {
+      setResumeError('Your browser blocked the resume tab. Allow pop-ups for SkillSphere and try again.');
+      return;
+    }
+    previewWindow.opener = null;
+    setResumeError('');
+    setOpeningResumeId(applicant.id);
+
+    try {
+      // Use the authenticated API client so the resume stays private. Never
+      // navigate the browser to the API path without its Authorization header.
+      const response = await api.get(`/resumes/${resumeId}/download`, { responseType: 'blob' });
+      const mediaType = String(response.headers?.['content-type'] || response.data?.type || '').toLowerCase();
+      const blob = response.data instanceof Blob
+        ? response.data
+        : new Blob([response.data], { type: mediaType || 'application/octet-stream' });
+
+      if (!blob.size) throw new Error('The resume file is empty.');
+
+      const objectUrl = URL.createObjectURL(blob);
+      if (mediaType.includes('application/pdf') || blob.type.toLowerCase().includes('application/pdf')) {
+        previewWindow.location.replace(objectUrl);
+        const cleanupTimer = window.setInterval(() => {
+          if (previewWindow.closed) {
+            window.clearInterval(cleanupTimer);
+            URL.revokeObjectURL(objectUrl);
+          }
+        }, 1500);
+      } else if (mediaType.startsWith('image/')) {
+        previewWindow.location.replace(objectUrl);
+        const cleanupTimer = window.setInterval(() => {
+          if (previewWindow.closed) {
+            window.clearInterval(cleanupTimer);
+            URL.revokeObjectURL(objectUrl);
+          }
+        }, 1500);
+      } else {
+        previewWindow.close();
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = `resume-${resumeId}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      }
+    } catch (err) {
+      previewWindow.close();
+      const status = err.response?.status;
+      if (status === 403) {
+        setResumeError('You are not authorized to view this resume. Recruiters can view resumes only for applicants to their own jobs.');
+      } else if (status === 404) {
+        setResumeError('The resume file is missing or no longer available.');
+      } else if (status === 401) {
+        setResumeError('Your session has expired. Sign in again to view this resume.');
+      } else {
+        setResumeError('Unable to open this resume right now. Please try again.');
+      }
+    } finally {
+      setOpeningResumeId(null);
+    }
+  };
+
   const getCandidateName = (item) =>
     item.candidate_name || 'Unnamed Candidate';
 
@@ -163,6 +246,7 @@ export default function ApplicantPipeline() {
 
       {error && <div className="ss-alert">{error}</div>}
       {success && <div className="ss-notice">{success}</div>}
+      {resumeError && <div className="ss-alert" role="alert">{resumeError}</div>}
 
       <div className="ss-kpis">
         <div className="ss-kpi">
@@ -278,15 +362,16 @@ export default function ApplicantPipeline() {
                     {stageLabels[activeStage]}
                   </span>
 
-                  {applicant.resume_url && (
+                  {(applicant.resume_id || applicant.resume_url) && (
                     <button
                       className="pipeline-icon-btn"
+                      type="button"
                       title="View resume"
-                      onClick={() =>
-                        window.open(applicant.resume_url, '_blank', 'noopener,noreferrer')
-                      }
+                      aria-label={`View resume for ${getCandidateName(applicant)}`}
+                      disabled={openingResumeId === applicant.id}
+                      onClick={() => openApplicantResume(applicant)}
                     >
-                      <FileText size={15} />
+                      <FileText size={15} /> {openingResumeId === applicant.id ? 'Opening…' : ''}
                     </button>
                   )}
 
@@ -308,17 +393,20 @@ export default function ApplicantPipeline() {
 
       {selectedApplicant && (
         <div
-          className="ss-modal-overlay"
+          className="ss-modal-overlay pipeline-modal-overlay"
           onClick={() => setSelectedApplicant(null)}
         >
           <div
             className="ss-modal pipeline-modal"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pipeline-status-modal-title"
           >
             <div className="ss-card-head">
               <div>
                 <span className="ss-eyebrow">CANDIDATE MANAGEMENT</span>
-                <h3>Update Applicant Status</h3>
+                <h3 id="pipeline-status-modal-title">Update Applicant Status</h3>
                 <p>{getCandidateName(selectedApplicant)}</p>
               </div>
 

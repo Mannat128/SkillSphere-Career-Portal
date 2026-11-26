@@ -12,6 +12,11 @@ class Candidate(Base):
     location = Column(String(150), nullable=True)
     headline = Column(String(200), nullable=True) # e.g. "Full Stack Developer | React & Python"
     bio = Column(Text, nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    linkedin_url = Column(String(500), nullable=True)
+    github_url = Column(String(500), nullable=True)
+    portfolio_url = Column(String(500), nullable=True)
+    additional_url = Column(String(500), nullable=True)
     profile_percentage = Column(Integer, default=0, nullable=False)
     visibility = Column(String(50), default="PUBLIC_TO_RECRUITERS", nullable=False) # PUBLIC_TO_RECRUITERS, PRIVATE
     is_open_to_work = Column(Boolean, default=True, nullable=False)
@@ -93,6 +98,10 @@ class CandidateProject(Base):
     description = Column(Text, nullable=True)
     technologies = Column(String(300), nullable=True)
     project_url = Column(String(500), nullable=True)
+    github_url = Column(String(500), nullable=True)
+    image_url = Column(String(500), nullable=True)
+    start_date = Column(String(20), nullable=True)
+    end_date = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     candidate = relationship("Candidate", back_populates="projects")
