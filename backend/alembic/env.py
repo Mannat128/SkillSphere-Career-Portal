@@ -11,6 +11,7 @@ from alembic import context
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings
+from app.database.tls import database_engine_options
 from app.models import Base
 
 # this is the Alembic Config object, which provides
@@ -70,6 +71,7 @@ def run_migrations_online() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **database_engine_options(settings.DATABASE_SSL_CA),
     )
 
     with connectable.connect() as connection:

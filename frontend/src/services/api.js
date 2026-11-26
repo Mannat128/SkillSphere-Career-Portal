@@ -1,7 +1,14 @@
 import axios from 'axios';
 
+const PRODUCTION_API_BASE_URL = 'https://skillsphere-career-portal.onrender.com/api/v1';
+const DEVELOPMENT_API_BASE_URL = 'http://localhost:8000/api/v1';
+
+const apiBaseUrl = import.meta.env.PROD
+  ? PRODUCTION_API_BASE_URL
+  : (import.meta.env.VITE_API_BASE_URL || DEVELOPMENT_API_BASE_URL);
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1',
+  baseURL: apiBaseUrl,
 });
 
 // Request interceptor: Attach JWT token if present
