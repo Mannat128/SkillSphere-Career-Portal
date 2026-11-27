@@ -13,6 +13,9 @@ BASE_DIR = os.path.dirname(
 
 ENV_PATH = os.path.join(BASE_DIR, ".env")
 PRODUCTION_FRONTEND_ORIGIN = "https://skill-sphere-career-portal.vercel.app"
+VERCEL_PREVIEW_FRONTEND_ORIGIN = (
+    "https://skill-sphere-career-portal-6c48dtcm6-mannat128s-projects.vercel.app"
+)
 
 
 class Settings(BaseSettings):
@@ -27,6 +30,7 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         PRODUCTION_FRONTEND_ORIGIN,
+        VERCEL_PREVIEW_FRONTEND_ORIGIN,
     ]
 
     # Database coordinates must be supplied explicitly. Local development can
@@ -114,9 +118,13 @@ class Settings(BaseSettings):
 
     @property
     def ALLOWED_CORS_ORIGINS(self) -> List[str]:
-        # Keep the production origin enabled even when Render supplies a
-        # CORS_ORIGINS override for additional environments.
-        return list(dict.fromkeys([*self.CORS_ORIGINS, PRODUCTION_FRONTEND_ORIGIN]))
+        # Keep both deployed frontend origins enabled even when Render supplies
+        # a CORS_ORIGINS override for additional environments.
+        return list(dict.fromkeys([
+            *self.CORS_ORIGINS,
+            PRODUCTION_FRONTEND_ORIGIN,
+            VERCEL_PREVIEW_FRONTEND_ORIGIN,
+        ]))
 
     @property
     def DATABASE_URL(self) -> str:
