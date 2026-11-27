@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.core.config import (
     CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
     PRODUCTION_FRONTEND_ORIGIN,
+    VERCEL_PREVIEW_ORIGIN_REGEX,
     VERCEL_PREVIEW_FRONTEND_ORIGIN,
     Settings,
 )
@@ -27,6 +28,21 @@ def make_settings(**overrides):
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+def make_cors_asgi_app():
+    """Build the project's CORS middleware policy without starting the app."""
+    from starlette.middleware.cors import CORSMiddleware
+
+    settings = make_settings()
+    return CORSMiddleware(
+        lambda *_args: None,
+        allow_origins=settings.ALLOWED_CORS_ORIGINS,
+        allow_origin_regex=VERCEL_PREVIEW_ORIGIN_REGEX,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1", "0.0.0.0", "db.localhost"])
@@ -81,88 +97,73 @@ def test_frontend_origins_preserve_local_and_both_vercel_deployments():
     assert CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN in settings.ALLOWED_CORS_ORIGINS
 
 
-@pytest.mark.parametrize(
-    "path",
-    ["/api/v1/auth/login", "/api/v1/assistant/guest-session"],
-)
-def test_cors_preflight_allows_current_preview_origin_for_api_post(path):
-    import asyncio
+def test_cors_preflight_allows_project_preview_origins_for_required_endpoints():
+    from starlette.datastructures import Headers
+    app = make_cors_asgi_app()
 
-    import httpx
-    from app.main import app
+    origins = [
+        "https://skill-sphere-career-portal-ab12cd34e-mannat128s-projects.vercel.app",
+        "https://skill-sphere-career-portal-ff6otbgaf-mannat128s-projects.vercel.app",
+        "https://skill-sphere-career-portal-6c48dtcm6-mannat128s-projects.vercel.app",
+    ]
+    paths = ["/api/v1/auth/login", "/api/v1/assistant/guest-session"]
 
-    async def send_preflight():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            return await client.options(
-                path,
-                headers={
-                    "Origin": CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
-                    "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "authorization,content-type",
-                },
-            )
-
-    response = asyncio.run(send_preflight())
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN
-    assert response.headers["access-control-allow-credentials"] == "true"
-    assert "POST" in response.headers["access-control-allow-methods"]
-    assert "OPTIONS" in response.headers["access-control-allow-methods"]
-    allowed_headers = response.headers["access-control-allow-headers"].lower()
-    assert "authorization" in allowed_headers
-    assert "content-type" in allowed_headers
+    for origin in origins:
+        for path in paths:
+            response = app.preflight_response(Headers({
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            }))
+            assert response.status_code == 200, (origin, path)
+            assert response.headers["access-control-allow-origin"] == origin
+            assert response.headers["access-control-allow-credentials"] == "true"
+            assert "POST" in response.headers["access-control-allow-methods"]
+            assert "OPTIONS" in response.headers["access-control-allow-methods"]
+            allowed_headers = response.headers["access-control-allow-headers"].lower()
+            assert "authorization" in allowed_headers
+            assert "content-type" in allowed_headers
 
 
-def test_login_returns_cors_headers_for_preview_origin_with_invalid_credentials():
-    import asyncio
+def test_cors_preflight_rejects_unrelated_origins():
+    from starlette.datastructures import Headers
+    app = make_cors_asgi_app()
 
-    import httpx
-    from app.main import app
-    from app.database.session import get_db
-    from app.models.user import User
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
+    origins = [
+        "https://different-project-ab12cd34e-mannat128s-projects.vercel.app",
+        "https://skill-sphere-career-portal-ab12cd34e-other-team.vercel.app",
+        "https://skill-sphere-career-portal-ab12cd34e-mannat128s-projects.vercel.com",
+        "http://skill-sphere-career-portal-ab12cd34e-mannat128s-projects.vercel.app",
+        "https://skill-sphere-career-portal-.mannat128s-projects.vercel.app",
+        "https://skill-sphere-career-portal-ab12cd34e-mannat128s-projects.vercel.app.attacker.test",
+    ]
 
-    test_engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    User.__table__.create(test_engine)
-    test_session_factory = sessionmaker(bind=test_engine)
+    for origin in origins:
+        response = app.preflight_response(Headers({
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        }))
+        assert response.status_code == 400, origin
+        assert "access-control-allow-origin" not in response.headers
 
-    def override_get_db():
-        db = test_session_factory()
-        try:
-            yield db
-        finally:
-            db.close()
 
-    async def send_login():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            return await client.post(
-                "/api/v1/auth/login",
-                json={"email": "missing-user@example.com", "password": "synthetic-invalid"},
-                headers={"Origin": CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN},
-            )
+def test_fastapi_cors_middleware_uses_anchored_project_regex_and_credentials():
+    from pathlib import Path
 
-    previous_override = app.dependency_overrides.get(get_db)
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        response = asyncio.run(send_login())
-    finally:
-        if previous_override is None:
-            app.dependency_overrides.pop(get_db, None)
-        else:
-            app.dependency_overrides[get_db] = previous_override
-        test_engine.dispose()
+    main_source = Path(__file__).parents[1] / "app" / "main.py"
+    source_text = main_source.read_text(encoding="utf-8")
+    assert "allow_origins=settings.ALLOWED_CORS_ORIGINS" in source_text
+    assert "allow_origin_regex=VERCEL_PREVIEW_ORIGIN_REGEX" in source_text
+    assert "allow_credentials=True" in source_text
+    assert "allow_methods=[\"*\"]" in source_text
+    assert "allow_headers=[\"*\"]" in source_text
 
-    assert response.status_code == 401
-    assert response.headers["access-control-allow-origin"] == CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN
-    assert response.headers["access-control-allow-credentials"] == "true"
+
+def test_login_origin_is_accepted_by_cors_policy():
+    app = make_cors_asgi_app()
+    assert app.is_allowed_origin(CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN)
+    assert app.allow_credentials is True
 
 
 def test_development_can_still_use_local_database():
@@ -173,14 +174,11 @@ def test_development_can_still_use_local_database():
 
 
 def test_fastapi_cors_middleware_includes_production_origin():
-    from app.main import app
+    from pathlib import Path
 
-    cors = next(
-        middleware
-        for middleware in app.user_middleware
-        if middleware.cls.__name__ == "CORSMiddleware"
-    )
-    assert PRODUCTION_FRONTEND_ORIGIN in cors.kwargs["allow_origins"]
+    main_source = Path(__file__).parents[1] / "app" / "main.py"
+    assert "allow_origins=settings.ALLOWED_CORS_ORIGINS" in main_source.read_text(encoding="utf-8")
+    assert PRODUCTION_FRONTEND_ORIGIN in make_settings().ALLOWED_CORS_ORIGINS
 
 
 

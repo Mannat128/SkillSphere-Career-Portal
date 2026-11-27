@@ -19,6 +19,9 @@ VERCEL_PREVIEW_FRONTEND_ORIGIN = (
 CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN = (
     "https://skill-sphere-career-portal-ff6otbgaf-mannat128s-projects.vercel.app"
 )
+VERCEL_PREVIEW_ORIGIN_REGEX = (
+    r"^https://skill-sphere-career-portal-[a-z0-9]+-mannat128s-projects\.vercel\.app$"
+)
 
 
 class Settings(BaseSettings):

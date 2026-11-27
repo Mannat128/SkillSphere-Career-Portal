@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.core.config import settings
+from app.core.config import VERCEL_PREVIEW_ORIGIN_REGEX, settings
 from app.database.session import SessionLocal
 from app.services.init_db import init_db
 from app.services.proctoring_scheduler import (
@@ -115,6 +115,7 @@ app.mount(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_CORS_ORIGINS,
+    allow_origin_regex=VERCEL_PREVIEW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
