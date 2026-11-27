@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import (
+    CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
     PRODUCTION_FRONTEND_ORIGIN,
     VERCEL_PREVIEW_FRONTEND_ORIGIN,
     Settings,
@@ -66,6 +67,7 @@ def test_production_origin_survives_a_render_cors_override():
 
     assert settings.ALLOWED_CORS_ORIGINS.count(PRODUCTION_FRONTEND_ORIGIN) == 1
     assert settings.ALLOWED_CORS_ORIGINS.count(VERCEL_PREVIEW_FRONTEND_ORIGIN) == 1
+    assert settings.ALLOWED_CORS_ORIGINS.count(CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN) == 1
     assert "https://preview.example.test" in settings.ALLOWED_CORS_ORIGINS
 
 
@@ -76,9 +78,14 @@ def test_frontend_origins_preserve_local_and_both_vercel_deployments():
     assert "http://127.0.0.1:3000" in settings.ALLOWED_CORS_ORIGINS
     assert PRODUCTION_FRONTEND_ORIGIN in settings.ALLOWED_CORS_ORIGINS
     assert VERCEL_PREVIEW_FRONTEND_ORIGIN in settings.ALLOWED_CORS_ORIGINS
+    assert CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN in settings.ALLOWED_CORS_ORIGINS
 
 
-def test_cors_preflight_allows_preview_origin_login_headers_and_post():
+@pytest.mark.parametrize(
+    "path",
+    ["/api/v1/auth/login", "/api/v1/assistant/guest-session"],
+)
+def test_cors_preflight_allows_current_preview_origin_for_api_post(path):
     import asyncio
 
     import httpx
@@ -88,9 +95,9 @@ def test_cors_preflight_allows_preview_origin_login_headers_and_post():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             return await client.options(
-                "/api/v1/auth/login",
+                path,
                 headers={
-                    "Origin": VERCEL_PREVIEW_FRONTEND_ORIGIN,
+                    "Origin": CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
                     "Access-Control-Request-Method": "POST",
                     "Access-Control-Request-Headers": "authorization,content-type",
                 },
@@ -98,7 +105,7 @@ def test_cors_preflight_allows_preview_origin_login_headers_and_post():
 
     response = asyncio.run(send_preflight())
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == VERCEL_PREVIEW_FRONTEND_ORIGIN
+    assert response.headers["access-control-allow-origin"] == CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN
     assert response.headers["access-control-allow-credentials"] == "true"
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "OPTIONS" in response.headers["access-control-allow-methods"]
@@ -139,7 +146,7 @@ def test_login_returns_cors_headers_for_preview_origin_with_invalid_credentials(
             return await client.post(
                 "/api/v1/auth/login",
                 json={"email": "missing-user@example.com", "password": "synthetic-invalid"},
-                headers={"Origin": VERCEL_PREVIEW_FRONTEND_ORIGIN},
+                headers={"Origin": CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN},
             )
 
     previous_override = app.dependency_overrides.get(get_db)
@@ -154,7 +161,7 @@ def test_login_returns_cors_headers_for_preview_origin_with_invalid_credentials(
         test_engine.dispose()
 
     assert response.status_code == 401
-    assert response.headers["access-control-allow-origin"] == VERCEL_PREVIEW_FRONTEND_ORIGIN
+    assert response.headers["access-control-allow-origin"] == CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN
     assert response.headers["access-control-allow-credentials"] == "true"
 
 

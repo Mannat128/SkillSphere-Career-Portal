@@ -16,6 +16,9 @@ PRODUCTION_FRONTEND_ORIGIN = "https://skill-sphere-career-portal.vercel.app"
 VERCEL_PREVIEW_FRONTEND_ORIGIN = (
     "https://skill-sphere-career-portal-6c48dtcm6-mannat128s-projects.vercel.app"
 )
+CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN = (
+    "https://skill-sphere-career-portal-ff6otbgaf-mannat128s-projects.vercel.app"
+)
 
 
 class Settings(BaseSettings):
@@ -31,6 +34,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         PRODUCTION_FRONTEND_ORIGIN,
         VERCEL_PREVIEW_FRONTEND_ORIGIN,
+        CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
     ]
 
     # Database coordinates must be supplied explicitly. Local development can
@@ -124,6 +128,7 @@ class Settings(BaseSettings):
             *self.CORS_ORIGINS,
             PRODUCTION_FRONTEND_ORIGIN,
             VERCEL_PREVIEW_FRONTEND_ORIGIN,
+            CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN,
         ]))
 
     @property
