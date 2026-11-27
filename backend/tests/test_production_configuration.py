@@ -102,6 +102,7 @@ def test_cors_preflight_allows_project_preview_origins_for_required_endpoints():
     app = make_cors_asgi_app()
 
     origins = [
+        "https://skill-sphere-career-portal-l87hs5fpi-mannat128s-projects.vercel.app",
         "https://skill-sphere-career-portal-ab12cd34e-mannat128s-projects.vercel.app",
         "https://skill-sphere-career-portal-ff6otbgaf-mannat128s-projects.vercel.app",
         "https://skill-sphere-career-portal-6c48dtcm6-mannat128s-projects.vercel.app",
@@ -160,10 +161,41 @@ def test_fastapi_cors_middleware_uses_anchored_project_regex_and_credentials():
     assert "allow_headers=[\"*\"]" in source_text
 
 
+def test_vercel_rewrites_client_side_routes_to_spa_entrypoint():
+    import json
+    from pathlib import Path
+
+    config_path = Path(__file__).parents[2] / "frontend" / "vercel.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert {"source": "/(.*)", "destination": "/index.html"} in config["rewrites"]
+
+
 def test_login_origin_is_accepted_by_cors_policy():
     app = make_cors_asgi_app()
     assert app.is_allowed_origin(CURRENT_VERCEL_PREVIEW_FRONTEND_ORIGIN)
     assert app.allow_credentials is True
+
+
+def test_latest_vercel_deployment_origin_is_accepted_for_login_preflight():
+    from starlette.datastructures import Headers
+
+    origin = (
+        "https://skill-sphere-career-portal-l87hs5fpi-"
+        "mannat128s-projects.vercel.app"
+    )
+    app = make_cors_asgi_app()
+
+    assert app.is_allowed_origin(origin)
+    response = app.preflight_response(Headers({
+        "Origin": origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    }))
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-allow-credentials"] == "true"
 
 
 def test_development_can_still_use_local_database():
